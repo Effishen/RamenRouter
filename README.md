@@ -9,7 +9,7 @@ The goal isn’t the prettiest traces. It’s squeezing more onto a smaller, che
 So, if you care more about making it fit than making it pretty, meet Ramen Router.
 100% vibe-coded. Ready to eat.
 
-Runs in your browser. 100% online, yet your content is safe because it is 100% client-side processing.
+Runs in your browser. 100% online, 100% client-side processing.
 
 Nothing to install. Just load your DSN, let it cook, and export your SES.
 
