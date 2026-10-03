@@ -1,14 +1,17 @@
 # Preface
 
-I had a very specific use case - I just wanted to see how small the board can get, and how many things I can cram on.
-And as some trace widths and hole sizes are cheaper, but unfortunately, larger, so some algorithmic gymnastics must be involved to make it work.
-So this is not your typical routing software.
+I built this for a very specific reason: How small can I make a PCB, how much can I cram onto it, and how cheaply can I get it made?
+Extra layers cost money. Finer traces cost money. Smaller holes cost money.
+I didn’t want to solve a difficult layout by making the board more expensive to manufacture. I wanted the routing algorithm to work harder instead.
+That calls for some algorithmic gymnastics.
 
-If you don't care how it routes, here is Ramen Router.
-100% vibe-coded, ready to eat.
+The goal isn’t the prettiest traces. It’s squeezing more onto a smaller, cheaper board—and finding a way to make it all connect.
+So, if you care more about making it fit than making it pretty, meet Ramen Router.
+100% vibe-coded. Ready to eat.
 
-100% online, yet 100% offline. 
-Nothing to install, just click, upload your DSN and get a SES back.
+Runs in your browser. 100% online, yet your content is safe because it is 100% client-side processing.
+
+Nothing to install. Just load your DSN, let it cook, and export your SES.
 
 [Open RamenRouter](https://effishen.github.io/RamenRouter/)
 
