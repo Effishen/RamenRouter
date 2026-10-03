@@ -18,7 +18,7 @@ computer, and you can download the app for offline use.
 
 ## Use it offline
 
-Download **RamenRouter-0.2.1.zip** from the
+Download **RamenRouter-0.2.2.zip** from the
 [latest release](https://github.com/Effishen/RamenRouter/releases/latest), extract
 the whole folder, and double-click **index.html**. Keep all the supplied files
 together in that folder. No internet connection is needed for the downloaded app.
@@ -41,6 +41,12 @@ your board can be manufactured with vias in those pads. You can also choose
 
 Alongside the .ses session, you can download a routed .dsn, a check report and
 the job log.
+
+If a board has overlapping pads or routing gets stuck, **Placement advice**
+can point out areas to inspect. Choose **Show area** to find them on the board.
+Make any placement changes in your PCB editor, export a new .dsn and try again.
+Suggestions are starting points, not a promise that moving a part will finish
+the board. When an export omits component names, advice uses pad and net labels.
 
 ## Keep and review your results
 

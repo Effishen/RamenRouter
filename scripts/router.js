@@ -93,16 +93,16 @@ function createRamenRouter(geometry, optimizer, fanout) {
       if(c.generation!==generation){c.dyn.fill(0);c.thickDyn.fill(0);c.viaDyn.fill(0);const guard=step*0.72;for(const t of board.traces.slice(original.traces.length)){let clear=Math.max(clearanceOf(net),clearanceOf(rules.get(t.net)));drawTrace(c.dyn,t,net.width/2+t.width/2+clear,t.net);drawTrace(c.thickDyn,t,net.width/2+t.width/2+clear+guard,t.net);drawTrace(c.viaDyn,t,c.via.diameter/2+t.width/2+clear,t.net);}for(const v of board.vias.slice(original.vias.length)){let clear=Math.max(clearanceOf(net),clearanceOf(rules.get(v.net)));drawVia(c.dyn,v,net.width/2+v.diameter/2+clear,v.net);drawVia(c.thickDyn,v,net.width/2+v.diameter/2+clear+guard,v.net);drawVia(c.viaDyn,v,c.via.diameter/2+v.diameter/2+clear,v.net);}c.generation=generation;}
       return c;
     }
-    function staticSegmentClear(a,b,layer,net){
+    function staticSegmentClear(a,b,layer,net,soft=false){
       const half=net.width/2,segmentBox=bboxPoints([a,b]);
       if(!G.shapeInsideBoard({type:'capsule',a:[a[0],a[1]],b:[b[0],b[1]],r:half,layer},original,boundaryEdges))return false;
       for(const o of padShapes)if(o.shape.layer===layer&&o.pad.net!==net.id){let r=half+Math.max(clearanceOf(net),clearanceOf(rules.get(o.pad.net)));if(overlap(expanded(o.box,r),segmentBox)&&G.distanceSegmentShape(a[0],a[1],b[0],b[1],o.shape)<r-EPS)return false;}
-      for(const t of board.traces)if(t.net!==net.id&&t.layer===layer){let r=half+t.width/2+Math.max(clearanceOf(net),clearanceOf(rules.get(t.net)));if(overlap(expanded(bboxPoints(t.points),r),segmentBox))for(let i=1;i<t.points.length;i++)if(G.distanceSegments(a,b,t.points[i-1],t.points[i])<r-EPS)return false;}
-      for(const v of board.vias)if(v.net!==net.id&&v.layers.includes(layer)){let r=half+v.diameter/2+Math.max(clearanceOf(net),clearanceOf(rules.get(v.net)));if(segmentDistance(v.x,v.y,a,b)<r-EPS)return false;}
+      for(let i=0;i<board.traces.length;i++){const t=board.traces[i];if(t.net!==net.id&&t.layer===layer&&(!soft||i<original.traces.length)){let r=half+t.width/2+Math.max(clearanceOf(net),clearanceOf(rules.get(t.net)));if(overlap(expanded(bboxPoints(t.points),r),segmentBox))for(let j=1;j<t.points.length;j++)if(G.distanceSegments(a,b,t.points[j-1],t.points[j])<r-EPS)return false;}}
+      for(let i=0;i<board.vias.length;i++){const v=board.vias[i];if(v.net!==net.id&&v.layers.includes(layer)&&(!soft||i<original.vias.length)){let r=half+v.diameter/2+Math.max(clearanceOf(net),clearanceOf(rules.get(v.net)));if(segmentDistance(v.x,v.y,a,b)<r-EPS)return false;}}
       for(const k of original.keepouts||[])if(k.kind!=='via'&&(!k.layers||k.layers.includes(layer))){let r=half+(k.clearance??clearanceOf(net));if(overlap(expanded(G.shapeBounds(k.shape),r),segmentBox)&&G.distanceSegmentShape(a[0],a[1],b[0],b[1],k.shape)<r-EPS)return false;}
       return true;
     }
-    function groupSeeds(group,net,c){
+    function groupSeeds(group,net,c,soft=false){
       let seeds=new Map(),points=group.points||[];
       for(const p of points){let l=p[2]??0;if(!(net.useLayers||original.layers.map(l=>l.index)).includes(l))continue;
         let anchors=[{at:p,bridge:[[p[0],p[1]]]}];
@@ -114,11 +114,11 @@ function createRamenRouter(geometry, optimizer, fanout) {
             // quantized to a coarse global raster. Every bridge is checked at full width.
             for(const d of directions)for(const distance of [1,2,3,4,6].map(a=>a*net.width)){
               const end=[p[0]+d[0]*distance,p[1]+d[1]*distance,l];
-              if(staticSegmentClear(p,end,l,net))anchors.push({at:end,bridge:[[p[0],p[1]],[end[0],end[1]]]});
+              if(staticSegmentClear(p,end,l,net,soft))anchors.push({at:end,bridge:[[p[0],p[1]],[end[0],end[1]]]});
             }
           }
         }
-        for(const anchor of anchors){let at=anchor.at,gx=Math.round((at[0]-bx)/step),gy=Math.round((at[1]-by)/step);for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){let x=gx+dx,y=gy+dy;if(x<0||x>=nx||y<0||y>=ny)continue;let id=idx(x,y,l),v=xy(id);if(allowed(c.base,id,net.id)&&allowed(c.dyn,id,net.id)&&staticSegmentClear(at,v,l,net)){let bridge=anchor.bridge.concat([[v[0],v[1]]]),cost=length({points:bridge});let old=seeds.get(id);if(!old||cost<old.cost)seeds.set(id,{point:p,bridge,cost});}}}
+        for(const anchor of anchors){let at=anchor.at,gx=Math.round((at[0]-bx)/step),gy=Math.round((at[1]-by)/step);for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){let x=gx+dx,y=gy+dy;if(x<0||x>=nx||y<0||y>=ny)continue;let id=idx(x,y,l),v=xy(id);if(allowed(c.base,id,net.id)&&(soft||allowed(c.dyn,id,net.id))&&staticSegmentClear(at,v,l,net,soft)){let bridge=anchor.bridge.concat([[v[0],v[1]]]),cost=length({points:bridge});let old=seeds.get(id);if(!old||cost<old.cost)seeds.set(id,{point:p,bridge,cost});}}}
       }return seeds;
     }
     async function search(seeds,targets,net,c,soft=false,softPenalty=80){
@@ -153,10 +153,19 @@ function createRamenRouter(geometry, optimizer, fanout) {
       for(const v of board.vias.slice(original.vias.length)){if(v.net===net.id)continue;let clear=Math.max(clearanceOf(net),clearanceOf(rules.get(v.net)));for(const t of copper.traces)if(v.layers.includes(t.layer)&&t.points.some((p,i)=>i&&segmentDistance(v.x,v.y,t.points[i-1],p)<v.diameter/2+t.width/2+clear+EPS))out.add(v.net);for(const w of copper.vias)if(v.layers.some(l=>w.layers.includes(l))&&Math.hypot(v.x-w.x,v.y-w.y)<v.diameter/2+w.diameter/2+clear+EPS)out.add(v.net);}return out;}
     function removeNet(net){board.traces=board.traces.filter((t,i)=>i<original.traces.length||t.net!==net);board.vias=board.vias.filter((v,i)=>i<original.vias.length||v.net!==net);generation++;}
     const initialConnections=G.connectivity(original),groupsByNet=new Map(initialConnections.components.map(c=>[c.net,c.groups]));
-    async function routeNet(net,softAllowed,keepExisting=false){let c=await getRaster(net);if(stopped())return{failed:true,ripped:new Set()};let groups=(keepExisting?(G.connectivity(board).components.find(c=>c.net===net.id)?.groups||[]):(groupsByNet.get(net.id)||[])).filter(g=>g.points&&g.points.length);if(groups.length<=1)return{failed:false,ripped:new Set()};let ordered=groups.map(g=>({group:g,seeds:groupSeeds(g,net,c)}));ordered.sort((a,b)=>b.seeds.size-a.seeds.size);let root=ordered.shift(),targets=new Map(root.seeds),remaining=ordered,ripped=new Set(),failed=false;
-      while(remaining.length&&!stopped()){let targetCoordinates=[...targets.keys()].map(xy);if(!targetCoordinates.length){failed=true;break;}remaining.sort((a,b)=>distanceToTree(a.group,targetCoordinates)-distanceToTree(b.group,targetCoordinates));let next=remaining.shift(),found=await search(next.seeds,targets,net,c,false);if(!found&&softAllowed)found=await search(next.seeds,targets,net,c,true,35);if(!found){failed=true;continue;}let copper=convertPath(found,net),blocked=blockers(copper,net);if(blocked.size){for(const n of blocked){removeNet(n);ripped.add(n);}c=await getRaster(net);}
+    async function routeNet(net,softAllowed,keepExisting=false){let c=await getRaster(net);if(stopped())return{failed:true,ripped:new Set()};let groups=(keepExisting?(G.connectivity(board).components.find(c=>c.net===net.id)?.groups||[]):(groupsByNet.get(net.id)||[])).filter(g=>g.points&&g.points.length);if(groups.length<=1)return{failed:false,ripped:new Set()};let ordered=groups.map(g=>({group:g,seeds:groupSeeds(g,net,c)}));ordered.sort((a,b)=>b.seeds.size-a.seeds.size);let root=ordered.shift(),targets=new Map(root.seeds),targetGroups=[root.group],remaining=ordered,ripped=new Set(),failed=false;
+      while(remaining.length&&!stopped()){let targetCoordinates=targets.size?[...targets.keys()].map(xy):targetGroups.flatMap(group=>group.points);remaining.sort((a,b)=>distanceToTree(a.group,targetCoordinates)-distanceToTree(b.group,targetCoordinates));let next=remaining.shift(),found=await search(next.seeds,targets,net,c,false);
+        if(!found&&softAllowed){
+          // Generated routes can block the attachment bridge before A* starts.
+          // Let soft search reach those endpoints, then rip every crossed net
+          // using the same blocker check as the body of the candidate route.
+          const softTargets=new Map(targets);
+          for(const group of targetGroups)for(const [id,seed]of groupSeeds(group,net,c,true)){const old=softTargets.get(id);if(!old||(seed.cost||0)<(old.cost||0))softTargets.set(id,seed);}
+          found=await search(groupSeeds(next.group,net,c,true),softTargets,net,c,true,35);
+        }
+        if(!found){failed=true;continue;}let copper=convertPath(found,net),blocked=blockers(copper,net);if(blocked.size){for(const n of blocked){removeNet(n);ripped.add(n);}c=await getRaster(net);}
         board.traces.push(...copper.traces);for(const v of copper.vias)if(!board.vias.some(w=>w.net===v.net&&Math.hypot(w.x-v.x,w.y-v.y)<EPS))board.vias.push(v);generation++;
-        for(const id of found.path)targets.set(id,xy(id));for(const [id,p]of next.seeds)targets.set(id,p);
+        targetGroups.push(next.group);for(const id of found.path)targets.set(id,xy(id));for(const [id,p]of next.seeds)targets.set(id,p);
       }return{failed,ripped};}
     function distanceToTree(group,points){let best=Infinity;for(const p of group.points)for(const q of points)best=Math.min(best,Math.hypot(p[0]-q[0],p[1]-q[1]));return best;}
     function scoreBetter(a,b){if(a.totalViolations>baseTotal||a.clearanceViolations>baseViolation||a.belowNominalWidthTraceCount>baseWidth)return false;let ka=[a.unrouted,a.viaCount,a.traceLengthMm],kb=[b.unrouted,b.viaCount,b.traceLengthMm];for(let i=0;i<ka.length;i++){if(ka[i]<kb[i]-1e-8)return true;if(ka[i]>kb[i]+1e-8)return false;}return false;}

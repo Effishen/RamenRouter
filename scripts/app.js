@@ -20,6 +20,9 @@
   let forcedStop = false;
   let dismissedSuggestionJobId = null;
   let announcedSuggestionJobId = null;
+  let adviceRenderKey = '';
+  let announcedAdviceJobId = null;
+  let focusedAdvice = null;
   const visibleLayers = new Map();
   let layerColors = new Map();
   const canvas = $('boardCanvas');
@@ -116,6 +119,7 @@
     if (!connected) hint = 'Waiting for the browser engine.';
     $('runHint').textContent = hint;
     updateViaSuggestion();
+    updatePlacementAdvice();
   }
 
   function canSuggestViaInPad() {
@@ -137,6 +141,110 @@
       announcedSuggestionJobId = job.id;
       requestAnimationFrame(() => { if (!$('viaSuggestion').hidden) $('viaSuggestion').scrollIntoView({ block: 'nearest' }); });
     }
+  }
+
+  function adviceArea(item) {
+    const area = item?.area;
+    if (Array.isArray(area) && area.length === 4 && area.every(Number.isFinite) && area[2] >= area[0] && area[3] >= area[1]) return area;
+    const point = item?.location;
+    if (Array.isArray(point) && point.length === 2 && point.every(Number.isFinite)) return [point[0] - 1, point[1] - 1, point[0] + 1, point[1] + 1];
+    return null;
+  }
+
+  function updatePlacementAdvice() {
+    const job = currentState?.job;
+    const advice = job?.advice;
+    const supplied = Array.isArray(advice?.items) ? advice.items : [];
+    const needsWork = (job?.stats?.unrouted || 0) > 0 || (job?.stats?.totalViolations ?? job?.stats?.clearanceViolations ?? 0) > 0;
+    const finished = terminalStates.has(job?.state) && !job?.settings?.fanoutOnly;
+    const items = (job?.state === 'ready' ? supplied.filter(item => item.kind === 'existing_short') : (finished && needsWork ? supplied : [])).slice(0, 3);
+    const show = items.length > 0 && !isActive();
+    $('placementAdvice').hidden = !show;
+    $('showPlacementAdvice').hidden = !show;
+    $('placementAdviceCount').textContent = show ? String(items.length) : '';
+    if (!show) {
+      if (focusedAdvice) clearAdviceFocus();
+      adviceRenderKey = '';
+      return;
+    }
+    const key = JSON.stringify([job.id, items, Boolean(advice.limitedComponentLabels), advice.note || '']);
+    if (key !== adviceRenderKey) {
+      adviceRenderKey = key;
+      $('placementLabelNote').hidden = !advice.limitedComponentLabels;
+      $('placementLabelDetail').textContent = advice.note || 'This DSN does not include the original component labels. Use the pad, net and location shown below.';
+      const container = $('placementAdviceItems');
+      container.replaceChildren();
+      for (const [index, item] of items.entries()) {
+        const card = document.createElement('details');
+        card.className = 'advice-finding';
+        card.dataset.adviceId = String(item.id ?? index);
+        card.open = index === 0;
+        const heading = document.createElement('summary');
+        const numeral = document.createElement('span'); numeral.className = 'advice-item-number'; numeral.textContent = String(index + 1);
+        const title = document.createElement('span'); title.textContent = item.title || 'Review this area';
+        heading.append(numeral, title);
+        const body = document.createElement('div'); body.className = 'advice-finding-body';
+        const marker = document.createElement('span'); marker.className = 'advice-certainty' + (item.kind === 'existing_short' ? ' confirmed' : '');
+        marker.textContent = item.kind === 'existing_short' ? 'Confirmed source issue' : 'Possible improvement';
+        body.append(marker);
+        const references = [];
+        if (item.component && !advice.limitedComponentLabels) references.push(String(item.component));
+        if (item.pin) references.push(`${item.component && !advice.limitedComponentLabels ? 'Pin' : 'Pad'} ${item.pin}`);
+        if (item.net) references.push(`Net ${item.net}`);
+        if (references.length) { const context = document.createElement('p'); context.className = 'advice-context'; context.textContent = references.join(' · '); body.append(context); }
+        if (Array.isArray(item.location) && item.location.length === 2 && item.location.every(Number.isFinite)) {
+          const position = document.createElement('p'); position.className = 'advice-location'; position.textContent = `X ${number(item.location[0], 2)} · Y ${number(item.location[1], 2)} mm`; body.append(position);
+        }
+        if (item.detail) {
+          const evidence = document.createElement('details'); evidence.className = 'advice-evidence';
+          const label = document.createElement('summary'); label.textContent = 'Why this area?';
+          const detail = document.createElement('p'); detail.className = 'advice-detail'; detail.textContent = item.detail;
+          evidence.append(label, detail); body.append(evidence);
+        }
+        if (item.suggestion) { const action = document.createElement('p'); action.className = 'advice-action'; action.textContent = item.suggestion; body.append(action); }
+        if (!advice.limitedComponentLabels && Array.isArray(item.nearbyComponents) && item.nearbyComponents.length) {
+          const nearby = document.createElement('p'); nearby.className = 'advice-nearby'; nearby.textContent = `Nearby: ${item.nearbyComponents.slice(0, 4).join(', ')}`; body.append(nearby);
+        }
+        if (adviceArea(item)) {
+          const focus = document.createElement('button'); focus.type = 'button'; focus.className = 'advice-show-area'; focus.textContent = 'Show area';
+          focus.addEventListener('click', () => focusAdviceArea(item, index)); body.append(focus);
+        }
+        card.append(heading, body); container.append(card);
+      }
+    }
+    for (const button of $('placementAdviceItems').querySelectorAll('.advice-show-area')) button.disabled = !board || busy;
+    if (announcedAdviceJobId !== job.id && !canSuggestViaInPad()) {
+      announcedAdviceJobId = job.id;
+      requestAnimationFrame(() => { if (!$('placementAdvice').hidden) $('placementAdvice').scrollIntoView({ block: 'start' }); });
+    }
+  }
+
+  function clearAdviceFocus() {
+    focusedAdvice = null;
+    $('adviceFocusChip').hidden = true;
+    for (const item of $('placementAdviceItems').querySelectorAll('.advice-finding')) item.classList.remove('focused');
+    draw();
+  }
+
+  function focusAdviceArea(item, index) {
+    const bounds = adviceArea(item);
+    if (!board || !bounds) return;
+    focusedAdvice = { item, bounds, jobId: currentState?.job?.id, index };
+    const boardBounds = getBounds();
+    const boardSpan = boardBounds ? Math.max(boardBounds[2] - boardBounds[0], boardBounds[3] - boardBounds[1]) : Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
+    const minimumSpan = Math.max(boardSpan * .01, Number.EPSILON);
+    const width = Math.max(bounds[2] - bounds[0], minimumSpan), height = Math.max(bounds[3] - bounds[1], minimumSpan);
+    const padding = Math.max(width, height) * .18;
+    view.scale = Math.max(view.fitScale, Math.min(view.fitScale * 40, (view.width - 64) / (width + padding * 2), (view.height - 100) / (height + padding * 2)));
+    view.x = view.width / 2 - (bounds[0] + bounds[2]) / 2 * view.scale;
+    view.y = view.height / 2 + (bounds[1] + bounds[3]) / 2 * view.scale;
+    $('showPads').checked = true;
+    if (Number.isInteger(item.evidence?.layer)) { visibleLayers.set(layerKey(item.evidence.layer), true); updateLayers(); }
+    $('adviceFocusLabel').textContent = `Suggestion ${index + 1} · highlighted area`;
+    $('adviceFocusChip').hidden = false;
+    for (const [i, card] of [...$('placementAdviceItems').children].entries()) card.classList.toggle('focused', i === index);
+    updateZoom(); draw();
+    canvas.scrollIntoView({ block: 'center' });
   }
 
   function stat(id, value, initial, unit = '') {
@@ -208,10 +316,11 @@
       $('fileDetail').textContent = job.state === 'inspecting' ? 'Reading design…' : 'Original DSN loaded';
       document.title = `${job.name || 'Board'} · RamenRouter`;
     }
-    $('stateTitle').textContent = job?.state === 'completed' && job.stats?.unrouted > 0 ? 'Connections remain' : (labels[job?.state] || (job?.state ? job.state : 'Ready when you are'));
+    const completedWithRuleIssues = job?.state === 'completed' && (job.stats?.totalViolations ?? job.stats?.clearanceViolations ?? 0) > 0;
+    $('stateTitle').textContent = job?.state === 'completed' && job.stats?.unrouted > 0 ? 'Connections remain' : (completedWithRuleIssues ? 'Review rule issues' : (labels[job?.state] || (job?.state ? job.state : 'Ready when you are')));
     $('phaseLabel').textContent = phaseName(job?.phase) || (hasJob ? 'Choose settings and start routing' : 'No active job');
-    $('jobStateIcon').textContent = active ? '⤳' : (icons[job?.state] || '○');
-    $('jobState').className = `job-state ${active ? 'running' : (job?.state === 'error' ? 'failed' : job?.state || '')}`;
+    $('jobStateIcon').textContent = active ? '⤳' : (completedWithRuleIssues ? '!' : (icons[job?.state] || '○'));
+    $('jobState').className = `job-state ${active ? 'running' : (job?.state === 'error' || completedWithRuleIssues ? 'failed' : job?.state || '')}`;
     $('elapsedValue').textContent = seconds(job?.elapsedSeconds);
     $('jobError').hidden = !job?.error;
     $('jobError').textContent = job?.error ? String(job.error) : '';
@@ -228,6 +337,7 @@
       if ($('autoScroll').checked) $('logScroll').scrollTop = $('logScroll').scrollHeight;
     }
     if (hasJob && job.id !== lastJobId) {
+      if (focusedAdvice) clearAdviceFocus();
       lastJobId = job.id;
       boardKey = '';
       board = null;
@@ -272,6 +382,7 @@
       if (bounds) parts.push(`${number(bounds[2] - bounds[0], 1)} × ${number(bounds[3] - bounds[1], 1)} mm`);
       $('geometrySummary').textContent = parts.join(' · ');
       if (fit) fitBoard(); else draw();
+      updatePlacementAdvice();
     } catch (error) {
       if (!board) $('geometrySummary').textContent = 'Board geometry is not available yet';
     } finally { fetchingBoard = false; $('boardBusy').hidden = true; }
@@ -425,6 +536,37 @@
       }
       ctx.setLineDash([]); ctx.globalAlpha = 1;
     }
+    if (focusedAdvice && focusedAdvice.jobId === currentState?.job?.id) {
+      const [minX, minY, maxX, maxY] = focusedAdvice.bounds;
+      const [left, top] = worldToScreen(minX, maxY), [right, bottom] = worldToScreen(maxX, minY);
+      const width = Math.max(10, right - left), height = Math.max(10, bottom - top);
+      ctx.save();
+      ctx.fillStyle = '#f5cc7312'; ctx.fillRect(left, top, width, height);
+      ctx.strokeStyle = '#f4d28a'; ctx.lineWidth = 2; ctx.setLineDash([7, 5]); ctx.strokeRect(left, top, width, height); ctx.setLineDash([]);
+      const focusNets = new Set([focusedAdvice.item.net, ...(focusedAdvice.item.evidence?.nets || []), ...(focusedAdvice.item.evidence?.nearbyPads || []).map(pad => pad.net)].filter(Boolean));
+      for (const pad of board.pads || []) {
+        if (!layerVisible(pad.layer) || (focusNets.size && !focusNets.has(pad.net))) continue;
+        let padMinX = pad.x - (pad.radius || 0), padMaxX = pad.x + (pad.radius || 0);
+        let padMinY = pad.y - (pad.radius || 0), padMaxY = pad.y + (pad.radius || 0);
+        if (pad.points?.length) {
+          padMinX = Math.min(...pad.points.map(point => point[0])); padMaxX = Math.max(...pad.points.map(point => point[0]));
+          padMinY = Math.min(...pad.points.map(point => point[1])); padMaxY = Math.max(...pad.points.map(point => point[1]));
+        }
+        if (padMaxX < minX || padMinX > maxX || padMaxY < minY || padMinY > maxY) continue;
+        if (pad.points && path(pad.points, true)) ctx.stroke();
+        else {
+          const [x, y] = worldToScreen(pad.x, pad.y);
+          ctx.beginPath(); ctx.arc(x, y, Math.max(6, (Number(pad.radius) || .2) * view.scale + 3), 0, Math.PI * 2); ctx.stroke();
+        }
+      }
+      const point = focusedAdvice.item.location;
+      if (Array.isArray(point) && point.length === 2 && point.every(Number.isFinite)) {
+        const [x, y] = worldToScreen(point[0], point[1]);
+        ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x - 12, y); ctx.lineTo(x - 9, y); ctx.moveTo(x + 9, y); ctx.lineTo(x + 12, y); ctx.moveTo(x, y - 12); ctx.lineTo(x, y - 9); ctx.moveTo(x, y + 9); ctx.lineTo(x, y + 12); ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
 
   function getSettings() {
@@ -524,6 +666,8 @@
   $('closeAboutBottom').addEventListener('click', () => $('aboutDialog').close());
   $('aboutDialog').addEventListener('click', event => { if (event.target === $('aboutDialog')) { const rect = event.target.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) event.target.close(); } });
   $('fitButton').addEventListener('click', fitBoard);
+  $('showPlacementAdvice').addEventListener('click', () => $('placementAdvice').scrollIntoView({ block: 'start' }));
+  $('clearAdviceFocus').addEventListener('click', clearAdviceFocus);
   $('zoomIn').addEventListener('click', () => zoomBy(1.25));
   $('zoomOut').addEventListener('click', () => zoomBy(.8));
   $('showPads').addEventListener('change', draw);

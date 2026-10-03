@@ -14,6 +14,7 @@
   <script src="scripts/optimizer.js" defer></script>
   <script src="scripts/fanout.js" defer></script>
   <script src="scripts/router.js" defer></script>
+  <script src="scripts/advisor.js" defer></script>
   <script src="scripts/native-api.js" defer></script>
   <script src="scripts/app.js" defer></script>
 </head>
@@ -24,7 +25,7 @@
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M5 20h30c-1 10-7 15-15 15S6 30 5 20Zm6 15h18M10 7v5h8v8m9-16v8h-4v8M4 15h13M25 15h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="5" r="2" fill="currentColor"/><circle cx="27" cy="3" r="2" fill="currentColor"/></svg>
       <span>Ramen<span class="brand-light">Router</span><span class="brand-caption">PCB ROUTING WORKBENCH</span></span>
     </div>
-    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
+    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.2</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
     <div class="connection" id="connection"><span class="status-dot"></span><span id="connectionText">Starting browser engine</span></div>
     <button class="icon-button help-button" id="helpButton" title="About this workbench" aria-label="About this workbench">?</button>
   </header>
@@ -75,6 +76,8 @@
         <div class="empty-board" id="emptyBoard"><div class="empty-board-art" aria-hidden="true"><svg viewBox="0 0 190 135" fill="none"><rect x="25" y="14" width="140" height="104" rx="10" stroke="currentColor" stroke-width="1.4"/><rect x="74" y="45" width="44" height="43" rx="3" stroke="currentColor" stroke-width="1.4"/><path d="M82 45V33H47v16m45-4V26h48v16m-22 13h24v39h-13M118 68h34M106 88v17H63V84m22 4v8H46V66m28-10H60v15" stroke="currentColor" stroke-width="1.4"/><circle cx="47" cy="52" r="4" stroke="currentColor"/><circle cx="140" cy="46" r="4" stroke="currentColor"/><circle cx="46" cy="62" r="4" stroke="currentColor"/><circle cx="63" cy="80" r="4" stroke="currentColor"/><circle cx="60" cy="75" r="4" stroke="currentColor"/><circle cx="125" cy="94" r="4" stroke="currentColor"/><circle cx="155" cy="68" r="3" stroke="currentColor"/></svg></div><span class="eyebrow">LOCAL ENGINE · PRECISE CONTROL</span><h1>Your next route starts here.</h1><p>Bring in a DSN board, choose your settings,<br>and let RamenRouter get to work.</p><div class="empty-keys"><kbd>SCROLL</kbd> Zoom <span>·</span> <kbd>DRAG</kbd> Pan <span>·</span> <kbd>F</kbd> Fit</div></div>
         <div class="board-busy" id="boardBusy" hidden><span class="spinner"></span><span>Loading board geometry</span></div>
         <div class="canvas-label" id="canvasLabel" hidden><span class="live-dot"></span><span id="canvasLabelText">Input board</span></div>
+        <div class="advice-focus-chip" id="adviceFocusChip" hidden><span id="adviceFocusLabel">Suggestion area</span><button id="clearAdviceFocus" type="button" aria-label="Clear suggestion highlight" title="Clear suggestion highlight">×</button></div>
+        <button class="advice-jump" id="showPlacementAdvice" type="button" hidden><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="5" stroke="currentColor" stroke-width="1.4"/><path d="M10 1v5m0 8v5M1 10h5m8 0h5" stroke="currentColor" stroke-width="1.4"/></svg> Placement advice <span id="placementAdviceCount"></span></button>
         <div class="canvas-axis" aria-hidden="true"><span class="axis-y">Y</span><span class="axis-x">X</span><span class="axis-origin">⊥</span></div>
       </div>
       <div class="board-statusbar"><span id="geometrySummary">No board loaded</span><span id="cursorPosition">Drag to pan · scroll to zoom</span></div>
@@ -91,6 +94,12 @@
       <div class="stats-grid" id="statsGrid"><div class="stat-card"><span>Unrouted</span><strong id="unroutedValue">—</strong><small id="unroutedChange">No board loaded</small></div><div class="stat-card"><span>Vias</span><strong id="viasValue">—</strong><small id="viasChange">No board loaded</small></div><div class="stat-card"><span>Trace length · mm</span><strong id="tracesValue">—</strong><small id="tracesChange">No board loaded</small></div><div class="stat-card"><span>Rule issues</span><strong id="connectionsValue">—</strong><small id="connectionsChange">Final check pending</small></div></div>
       <div class="width-check"><span>Below net width</span><strong id="widthValue">—</strong><small id="widthDetail">Check pending</small></div>
       <div class="job-error" id="jobError" hidden></div>
+      <section class="placement-advice" id="placementAdvice" aria-labelledby="placementAdviceTitle" hidden>
+        <div class="advice-heading"><h3 id="placementAdviceTitle">Placement advice</h3><span class="advice-check-label">REROUTE TO CHECK</span></div>
+        <p class="advice-intro">Possible changes to try in your PCB editor. Reroute afterward to check whether they help.</p>
+        <details class="advice-label-note" id="placementLabelNote" hidden><summary>Original component labels unavailable</summary><p id="placementLabelDetail">This DSN does not include the original component labels. Use the pad, net and location shown below.</p></details>
+        <div class="advice-findings" id="placementAdviceItems"></div>
+      </section>
       <section class="via-suggestion" id="viaSuggestion" aria-labelledby="viaSuggestionTitle" aria-live="polite" hidden>
         <h3 id="viaSuggestionTitle">Try vias in SMD pads?</h3>
         <p id="viaSuggestionDetail"></p>
@@ -108,7 +117,7 @@
       <button id="downloadSes" class="export-button" disabled><span class="export-file-type">SES</span><span><strong>Routing session</strong><small>Import into your PCB editor</small></span><span class="download-arrow" aria-hidden="true">↓</span></button>
       <div class="secondary-downloads"><button id="downloadDsn" class="text-button" disabled>Routed DSN <span aria-hidden="true">↓</span></button><button id="downloadChecks" class="text-button" disabled>Check report <span aria-hidden="true">↓</span></button><button id="downloadLog" class="text-button" disabled>Engine log <span aria-hidden="true">↓</span></button></div>
       <p class="export-note">Check clearances, connectivity and design rules in your PCB editor before manufacturing.</p>
-      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.1</span><span>Independent browser engine · GPL-3.0</span></div>
+      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.2</span><span>Independent browser engine · GPL-3.0</span></div>
       </div>
     </aside>
   </main>

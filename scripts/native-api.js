@@ -6,7 +6,7 @@
   let job = null, worker = null, workerUrl = null, inputText = null;
   let board = null, preview = null, exports = null, serial = 0, timer = null, watchdog = null;
   const logs = [];
-  const base = {appVersion:'0.2.1',engineVersion:'Ramen JS 0.2',fanoutVersion:'Ramen SMD escape'};
+  const base = {appVersion:'0.2.2',engineVersion:'Ramen JS 0.2.2',fanoutVersion:'Ramen SMD escape'};
   function notify() { for (const fn of subscribers) { try { fn(state()); } catch (_) {} } }
   function log(message) {
     logs.push(new Date().toLocaleTimeString() + '  ' + String(message));
@@ -29,9 +29,13 @@
     return s;
   }
   function workerMain() {
-    const dsn=createRamenDSN(), geo=createRamenGeometry(), router=createRamenRouter(geo,createRamenOptimizer(geo),createRamenFanout(geo));
+    const dsn=createRamenDSN(), geo=createRamenGeometry(), advisor=createRamenAdvisor(geo), router=createRamenRouter(geo,createRamenOptimizer(geo),createRamenFanout(geo));
     let cancelled=false,deadline=Infinity;
     const send=(data)=>self.postMessage(data);
+    function placementAdvice(b,initialBoard,includeIncomplete) {
+      try {return advisor.analyze(b,{initialBoard,includeIncomplete});}
+      catch(error) {send({type:'progress',message:'Placement advice unavailable: '+(error.message||String(error))});return {items:[]};}
+    }
     function restrictedSmdNets(b) {
       const candidates=new Set(), copperLayers=new Set(b.layers.map(layer=>layer.index));
       if(copperLayers.size<2)return candidates;
@@ -79,7 +83,7 @@
         cancelled=false;deadline=Date.now()+(m.options?.timeoutMinutes||30)*60000;
         const b=dsn.parse(m.text,m.name);
         const initial=stats(b);
-        send({type:'loaded',board:b,preview:geometry(b),stats:initial,warnings:b.warnings||[]});
+        send({type:'loaded',board:b,preview:geometry(b),stats:initial,advice:placementAdvice(b,b,false),warnings:b.warnings||[]});
         if(m.type==='inspect') {send({type:'ready'});return;}
         // Capture the original permissions before routing. This only identifies
         // relevant options; it does not predict that an override will succeed.
@@ -97,19 +101,20 @@
         const report=geo.validate(result);
         const endState=Date.now()>=deadline?'timed_out':(cancelled||out?.stopped?'stopped':'completed');
         const suggestions=endState==='completed'&&finalStats.unrouted>0&&padViaCandidates.size&&geo.connectivity(result).components.some(component=>component.groups.length>1&&padViaCandidates.has(component.net))?{viaInPad:true}:{};
-        send({type:'done',state:endState,suggestions,board:result,preview:geometry(result),stats:finalStats,
-          exports:{ses:dsn.exportSes(result,m.name),dsn:dsn.exportDsn(result,m.name),report:JSON.stringify({engine:'Ramen JS 0.2',settings:m.options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),stats:finalStats,checks:report},null,2)},
-          message:finalStats.unrouted===0?'All connections routed. Verify the exported session in your PCB editor.':finalStats.unrouted+' connections remain; best checked result retained.'});
+        const advice=endState==='completed'?placementAdvice(result,b,!m.options.fanoutOnly):{items:[]};
+        send({type:'done',state:endState,suggestions,advice,board:result,preview:geometry(result),stats:finalStats,
+          exports:{ses:dsn.exportSes(result,m.name),dsn:dsn.exportDsn(result,m.name),report:JSON.stringify({engine:'Ramen JS 0.2.2',settings:m.options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats:initial,stats:finalStats,checks:report,advice},null,2)},
+          message:finalStats.unrouted===0?(finalStats.totalViolations?'All connections routed, but '+finalStats.totalViolations+' rule issue(s) remain. Review them in your PCB editor.':'All connections routed. Verify the exported session in your PCB editor.'):finalStats.unrouted+' connections remain; best checked result retained.'});
       } catch(error) {send({type:'error',error:error.message||String(error),stack:error.stack||''});}
     };
   }
   function launch(type,options) {
     kill(); exports=null; preview=null; board=null;
     const id=++serial;
-    const source='"use strict";\n'+[createRamenDSN,createRamenGeometry,createRamenOptimizer,createRamenFanout,createRamenRouter,workerMain].map(fn=>fn.toString()).join('\n')+'\nworkerMain();';
+    const source='"use strict";\n'+[createRamenDSN,createRamenGeometry,createRamenOptimizer,createRamenFanout,createRamenRouter,createRamenAdvisor,workerMain].map(fn=>fn.toString()).join('\n')+'\nworkerMain();';
     workerUrl=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
     worker=new Worker(workerUrl);
-    job={id:String(id),name:job?.name||'board.dsn',state:type==='inspect'?'inspecting':'starting',phase:'loading',startedAt:Date.now(),settings:options,stats:null,initialStats:null,error:null,hasOutput:false,suggestions:{},revision:0,pass:0};
+    job={id:String(id),name:job?.name||'board.dsn',state:type==='inspect'?'inspecting':'starting',phase:'loading',startedAt:Date.now(),settings:options,stats:null,initialStats:null,error:null,hasOutput:false,suggestions:{},advice:{items:[]},revision:0,pass:0};
     worker.onmessage=e=>{
       if(id!==serial||!job)return;
       const m=e.data;
@@ -121,6 +126,7 @@
       if(m.pass!==undefined)job.pass=m.pass;
       if(m.type==='loaded') {
         job.initialStats=m.stats;
+        job.advice=m.advice||{items:[]};
         log('Loaded '+job.name+': '+m.stats.netCount+' nets, '+m.stats.unrouted+' incomplete connections.');
         for(const w of m.warnings||[])log('Input note: '+w);
         if(type==='run'&&job.state!=='stopping') {job.state='running';job.phase='routing';}
@@ -129,6 +135,7 @@
       if(m.type==='done') {
         exports=m.exports;job.hasOutput=true;job.state=job.stopReason||m.state;job.phase=job.state;job.endedAt=Date.now();
         job.suggestions=job.state==='completed'?(m.suggestions||{}):{};
+        job.advice=job.state==='completed'?(m.advice||{items:[]}):{items:[]};
         log('Checked result: '+job.stats.unrouted+' incomplete, '+(job.stats.totalViolations??job.stats.clearanceViolations)+' rule issues, '+job.stats.belowNominalWidthTraceCount+' undersized traces.');
         kill();
       }
