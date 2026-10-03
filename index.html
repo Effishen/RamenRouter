@@ -6,19 +6,19 @@
   <meta name="color-scheme" content="dark">
   <meta name="description" content="RamenRouter, a portable offline PCB routing workbench.">
   <title>RamenRouter — PCB routing workbench</title>
-  <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css">
-  <script src="demo-data.js" defer></script>
-  <script src="dsn.js" defer></script>
-  <script src="geometry.js" defer></script>
-  <script src="optimizer.js" defer></script>
-  <script src="fanout.js" defer></script>
-  <script src="router.js" defer></script>
-  <script src="native-api.js" defer></script>
-  <script src="app.js" defer></script>
+  <link rel="icon" href="images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles/main.css">
+  <script src="scripts/demo-data.js" defer></script>
+  <script src="scripts/dsn.js" defer></script>
+  <script src="scripts/geometry.js" defer></script>
+  <script src="scripts/optimizer.js" defer></script>
+  <script src="scripts/fanout.js" defer></script>
+  <script src="scripts/router.js" defer></script>
+  <script src="scripts/native-api.js" defer></script>
+  <script src="scripts/app.js" defer></script>
 </head>
 <body>
-  <noscript><div class="noscript">Enable JavaScript in your browser, then reopen RamenRouter.html.</div></noscript>
+  <noscript><div class="noscript">Enable JavaScript in your browser, then reopen index.html.</div></noscript>
   <header class="app-header">
     <div class="brand" aria-label="RamenRouter">
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M5 20h30c-1 10-7 15-15 15S6 30 5 20Zm6 15h18M10 7v5h8v8m9-16v8h-4v8M4 15h13M25 15h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="5" r="2" fill="currentColor"/><circle cx="27" cy="3" r="2" fill="currentColor"/></svg>
@@ -29,7 +29,7 @@
     <button class="icon-button help-button" id="helpButton" title="About this workbench" aria-label="About this workbench">?</button>
   </header>
 
-  <div id="disconnectBanner" class="connection-banner" hidden>The browser engine could not start. Keep every file in this folder together and reopen RamenRouter.html.</div>
+  <div id="disconnectBanner" class="connection-banner" hidden>The browser engine could not start. Keep every file in this folder together and reopen index.html.</div>
 
   <main class="workspace">
     <aside class="sidebar">
@@ -103,6 +103,6 @@
     </aside>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
-  <dialog id="aboutDialog"><div class="dialog-header"><span class="section-kicker">ABOUT RAMENROUTER</span><button id="closeAbout" class="icon-button" aria-label="Close about dialog">×</button></div><h2>Open a file.<br>Find a route.</h2><p>RamenRouter is a standalone PCB routing workbench with an independent JavaScript engine. It searches for routes in a browser worker and enforces imported net widths.</p><p>This is a routing and inspection tool. Export a Specctra DSN from your PCB editor, route it here, then import the SES result back into your editor.</p><div class="about-callout"><strong>Everything runs locally.</strong><p>Open RamenRouter.html to begin. Your files, routing calculations and exports stay in the browser. No server, Java runtime, installer or internet connection is needed.</p></div><p class="about-small">Independent GPL-3.0 source and notices are included in this folder. The preview simplifies some board geometry; check exported results in your PCB editor before manufacturing.</p><button id="closeAboutBottom" class="primary-button">Back to the board</button></dialog>
+  <dialog id="aboutDialog"><div class="dialog-header"><span class="section-kicker">ABOUT RAMENROUTER</span><button id="closeAbout" class="icon-button" aria-label="Close about dialog">×</button></div><h2>Open a file.<br>Find a route.</h2><p>RamenRouter is a standalone PCB routing workbench with an independent JavaScript engine. It searches for routes in a browser worker and enforces imported net widths.</p><p>This is a routing and inspection tool. Export a Specctra DSN from your PCB editor, route it here, then import the SES result back into your editor.</p><div class="about-callout"><strong>Everything runs locally.</strong><p>Open index.html to begin. Your files, routing calculations and exports stay in the browser. No server, Java runtime, installer or internet connection is needed.</p></div><p class="about-small">Independent GPL-3.0 source and notices are included in this folder. The preview simplifies some board geometry; check exported results in your PCB editor before manufacturing.</p><button id="closeAboutBottom" class="primary-button">Back to the board</button></dialog>
 </body>
 </html>

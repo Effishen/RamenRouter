@@ -37,7 +37,7 @@
   }
 
   async function api(path, options = {}) {
-    if (!nativeEngine || typeof nativeEngine.request !== 'function') throw new Error('The browser engine did not load. Keep all folder files together and reopen RamenRouter.html.');
+    if (!nativeEngine || typeof nativeEngine.request !== 'function') throw new Error('The browser engine did not load. Keep all folder files together and reopen index.html.');
     return await nativeEngine.request(path, options);
   }
 
@@ -432,7 +432,7 @@
 
   async function download(type) {
     try {
-      if (!nativeEngine || typeof nativeEngine.download !== 'function') throw new Error('Browser downloads are unavailable. Reopen RamenRouter.html.');
+      if (!nativeEngine || typeof nativeEngine.download !== 'function') throw new Error('Browser downloads are unavailable. Reopen index.html.');
       await nativeEngine.download(type);
       toast(type === 'log' ? 'Engine log downloaded.' : (type === 'report' ? 'Rule-check report downloaded.' : 'Export downloaded. Validate the result in your PCB editor.'));
     } catch (error) { toast(error.message, true); }

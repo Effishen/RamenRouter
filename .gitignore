@@ -20,24 +20,18 @@ width-check.json
 stop.flag
 
 # Keep intentionally committed original examples and test fixtures.
-!tests/browser-routed.png
 !examples/**/*.dsn
 !examples/**/*.DSN
 !fixtures/**/*.dsn
 !fixtures/**/*.DSN
 !fixtures/**/*.ses
 !fixtures/**/*.SES
-!tests/fixtures/**/*.dsn
-!tests/fixtures/**/*.DSN
-!tests/fixtures/**/*.ses
-!tests/fixtures/**/*.SES
 
 # Developer dependencies, local browser files and OS metadata.
 node_modules/
 package-lock.json
 playwright-report/
 test-results/
-tests/browser-file.png
 .env
 .env.*
 *.pem

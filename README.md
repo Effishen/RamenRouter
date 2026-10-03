@@ -1,79 +1,50 @@
-# RamenRouter 0.2.0
+# RamenRouter
 
-For hobbyists trying to cramp components onto small boards
+For hobbyists fitting a lot onto a small board.
 
-An offline PCB autorouter that runs directly in your desktop browser.
+RamenRouter helps you route the connections on small or crowded PCBs. It runs
+in your desktop browser, with no installation needed. Your board stays on your
+computer, and you can download the app for offline use.
 
-## Start
+[Open RamenRouter](https://effishen.github.io/RamenRouter/)
 
-1. Download this repository as a ZIP and extract it.
-2. Double-click **RamenRouter.html**. Keep the adjacent files together.
-3. Try the built-in demo, or open a Specctra **`.dsn`** exported by your PCB editor.
-4. Route the board and download an **`.ses` routing session**, routed **`.dsn`**, JSON check report, or log.
+## Get started
 
-No Java, installer, local server, account, or internet connection is required.
-The browser processes your board locally. Closing the page discards results
-that you have not downloaded.
+1. [Open RamenRouter](https://effishen.github.io/RamenRouter/) in your desktop browser.
+2. Try the included demo, or import a **.dsn** board exported from your PCB editor.
+3. Click **Start routing** and follow the progress.
+4. Download the **.ses routing session** when the job finishes.
+5. Import that session into the PCB editor you used to export the board.
 
-![The original synthetic demo routed in RamenRouter](tests/browser-routed.png)
+## Use it offline
 
-## Routing
+Download **RamenRouter-0.2.0.zip** from the
+[latest release](https://github.com/Effishen/RamenRouter/releases/latest), extract
+the whole folder, and double-click **index.html**. Keep all the supplied files
+together in that folder. No internet connection is needed for the downloaded app.
 
-This edition has a new JavaScript engine with multilayer A* search, repeated
-routing attempts, optional SMD fanout, and checked route optimization. New
-traces retain their imported nominal widths. Fanout targets dense pad rows;
-an escape-only option lets you inspect that stage independently.
+![RamenRouter showing a routed example board](images/demo.png)
 
-The via-in-pad override is off by default. Enabling it explicitly changes the
-imported via-placement permission.
+## Working with your board
 
-This is **not an exact port of Freerouting 2.2.4 or its historical 2.1.0 fanout**.
-Those releases informed the design investigation; their algorithms and results
-are not reproduced exactly.
+Place your components and set your board's routing rules in your PCB editor
+before exporting the .dsn file.
 
-## Scope and validation
+Use the board preview to zoom, pan and show or hide layers. The job overview
+shows progress and any connections still waiting to be routed. You can stop a
+job, adjust the settings and try again.
 
-Inputs must contain placement, nets, outlines, and routing rules. Supported
-features include signal layers, common pad shapes, class widths/clearances,
-fixed copper, cutouts, and keepouts. Unsupported constraints are rejected;
-the engine does not implement every Specctra feature or push-and-shove routing.
-Some boards will remain partly unrouted.
+Alongside the .ses session, you can download a routed .dsn, a check report and
+the job log.
 
-Import the SES into the originating PCB editor, refill zones, and run its full
-design-rule checks. CAD-side SES import and native Windows desktop operation
-have not been tested here. Direct `file://` operation has been tested in Chrome
-on Linux with external networking disabled.
+## Keep and review your results
 
-See [VALIDATION.txt](VALIDATION.txt) for supported formats, measured generic
-checks, and limits, and [README.txt](README.txt) for detailed operation.
+Download anything you want to keep **before starting another run, closing the
+page or reloading it**. Results are not saved automatically.
 
-## Development
+After importing the session into your PCB editor, review the routes, refill
+copper zones if your board uses them, and run the editor's design-rule checks.
+Some connections may still need to be finished by hand. Check the completed
+board before sending it for manufacture.
 
-The shipped HTML, CSS, and JavaScript are the editable source. Application use
-requires no build. Node.js is only needed for developer tests:
-
-```sh
-node tests/dsn.test.js
-node tests/geometry.test.cjs
-node tests/fanout.test.cjs
-node tests/router.test.cjs
-node tests/optimizer.test.cjs
-```
-
-The optional browser suite also needs Playwright:
-
-```sh
-npm install --no-save playwright
-npx playwright install chromium
-node tests/browser-file.cjs
-```
-
-To use an installed Chromium-based browser, set `CHROME_PATH` to its executable
-or pass `--browser "/path/to/chrome"`. Otherwise the suite uses Playwright's
-installed Chromium. It tests only the included synthetic fixtures.
-
-## License
-
-GNU GPL version 3 or later. See [LICENSE](LICENSE) and
-[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
-RamenRouter is an independent project, not an official Freerouting release.
+[License](LICENSE)
