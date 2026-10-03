@@ -1,10 +1,11 @@
-# RamenRouter
+# Preface
 
-For hobbyists fitting a lot onto a small board.
+I had a very specific use case - I just wanted to see how small the board can get, and how many things I can cram on.
+And as some trace widths and hole sizes are cheaper, but unfortunately, larger, so some algorithmic gymnastics must be involved to make it work.
+So this is not your typical routing software.
 
-RamenRouter helps you route the connections on small or crowded PCBs. It runs
-in your desktop browser, with no installation needed. Your board stays on your
-computer, and you can download the app for offline use.
+If you don't care how it routes, here is Ramen Router.
+100% vibe-coded, ready to eat.
 
 [Open RamenRouter](https://effishen.github.io/RamenRouter/)
 
