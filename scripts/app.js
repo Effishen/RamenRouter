@@ -81,7 +81,7 @@
     return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
   }
 
-  function phaseName(phase) { return ({ deep_search: 'Smart search', pad_escape: 'Pad-via escape' })[phase] || phase; }
+  function phaseName(phase) { return ({ deep_search: 'Smart search', pad_escape: 'Pad-via escape', finishing: 'Finishing remaining connections' })[phase] || phase; }
 
   function isActive() { return Boolean(currentState?.job && activeStates.has(currentState.job.state)); }
 
@@ -418,7 +418,7 @@
     if (job) stage = 0;
     if (phase.includes('fanout')) stage = 1;
     else if (phase.includes('optimiz')) stage = 3;
-    else if (phase.includes('rout') || (phase === 'deep_search' || phase === 'pad_escape') || job?.state === 'running') stage = 2;
+    else if (phase.includes('rout') || (phase === 'deep_search' || phase === 'pad_escape' || phase === 'finishing') || job?.state === 'running') stage = 2;
     if (job?.state === 'completed') stage = 4;
     for (const [i, node] of [...$('phaseTrack').children].entries()) {
       node.className = i < stage ? 'complete' : i === stage ? 'current' : '';

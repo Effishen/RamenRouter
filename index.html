@@ -25,7 +25,7 @@
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M5 20h30c-1 10-7 15-15 15S6 30 5 20Zm6 15h18M10 7v5h8v8m9-16v8h-4v8M4 15h13M25 15h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="5" r="2" fill="currentColor"/><circle cx="27" cy="3" r="2" fill="currentColor"/></svg>
       <span>Ramen<span class="brand-light">Router</span><span class="brand-caption">PCB ROUTING WORKBENCH</span></span>
     </div>
-    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.3</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
+    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.4</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
     <div class="connection" id="connection"><span class="status-dot"></span><span id="connectionText">Starting browser engine</span></div>
     <button class="icon-button help-button" id="helpButton" title="About this workbench" aria-label="About this workbench">?</button>
   </header>
@@ -57,7 +57,7 @@
           <label class="checkbox-row fanout-only" id="fanoutOnlyRow" hidden><input type="checkbox" id="fanoutOnly" name="fanoutOnly"><span>Pad escapes only · skip routing</span></label>
         </div>
         <div class="setting-block optimize-setting"><label class="switch-row" for="optimize"><span><strong>Optimize after routing</strong></span><span class="switch"><input type="checkbox" id="optimize" name="optimize" checked><span class="switch-track"></span></span></label><p>Refine completed routes and reduce vias.</p></div>
-        <div class="setting-block deep-search-setting"><label class="switch-row" for="deepSearch"><span><strong>Smart search</strong><span class="mini-badge">NEW</span></span><span class="switch"><input type="checkbox" id="deepSearch" name="deepSearch" checked><span class="switch-track"></span></span></label><p>Retry difficult nets with varied routing order and costs; keep the best checked result.</p></div>
+        <div class="setting-block deep-search-setting"><label class="switch-row" for="deepSearch"><span><strong>Smart search</strong><span class="mini-badge">NEW</span></span><span class="switch"><input type="checkbox" id="deepSearch" name="deepSearch" checked><span class="switch-track"></span></span></label><p>Retry difficult nets and untangle the last few connections. Keep the best checked result.</p></div>
         <details class="advanced-rules"><summary>Advanced rules <span>1 OPTION</span></summary>
           <div class="setting-block via-in-pad-setting"><label class="switch-row" for="viaInPad"><span><strong>Override: allow vias in SMD pads</strong></span><span class="switch"><input type="checkbox" id="viaInPad" name="viaInPad"><span class="switch-track"></span></span></label><p>Changes the imported via-placement rule. Check fabrication suitability. Off preserves the input rule.</p></div>
         </details>
@@ -129,7 +129,7 @@
       <button id="downloadSes" class="export-button" disabled><span class="export-file-type">SES</span><span><strong>Routing session</strong><small>Import into your PCB editor</small></span><span class="download-arrow" aria-hidden="true">↓</span></button>
       <div class="secondary-downloads"><button id="downloadDsn" class="text-button" disabled>Routed DSN <span aria-hidden="true">↓</span></button><button id="downloadChecks" class="text-button" disabled>Check report <span aria-hidden="true">↓</span></button><button id="downloadLog" class="text-button" disabled>Engine log <span aria-hidden="true">↓</span></button></div>
       <p class="export-note">Check clearances, connectivity and design rules in your PCB editor before manufacturing.</p>
-      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.3</span><span>Independent browser engine · GPL-3.0</span></div>
+      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.4</span><span>Independent browser engine · GPL-3.0</span></div>
       </div>
     </aside>
   </main>

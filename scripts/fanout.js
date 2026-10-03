@@ -94,7 +94,7 @@ function createRamenFanout(geometry) {
       const width=Math.max(...entries.map(e=>e.net.width)),normalHalf=Math.max(...entries.map(e=>e.geometry.longSpan/2));
       const pitch=Math.max(...entries.map(e=>defs.get(e.net.viaName).diameter+clearance(e.net.id)))+Math.max(.02,width*.025);
       const centerT=(entries[0].t+entries[entries.length-1].t)/2,centerN=entries.reduce((s,e)=>s+e.n,0)/entries.length;
-      let best=null;
+      let best=null;const choices=entries.map(()=>[]);
       for(const sign of [1,-1]){
         const normal=row.axis.map(v=>v*sign);
         for(const multiplier of [3,4,5,6,8,10,12]){
@@ -106,7 +106,7 @@ function createRamenFanout(geometry) {
               const entry=entries[i],t=centerT+(i-(entries.length-1)/2)*pitch+shift;
               const end=[row.axis[0]*(centerN+sign*offset)+row.tangent[0]*t,row.axis[1]*(centerN+sign*offset)+row.tangent[1]*t];
               const candidate=bundleFor(entry,end,normal,Math.min(shoulder,offset));
-              if(candidate&&legalBundle(candidate,temporary)){bundle.traces.push(...candidate.traces);bundle.vias.push(...candidate.vias);bundle.pads.push(...candidate.pads);temporary.push(...itemPrimitives(candidate));}
+              if(candidate&&legalBundle(candidate))choices[i].push(candidate);if(candidate&&legalBundle(candidate,temporary)){bundle.traces.push(...candidate.traces);bundle.vias.push(...candidate.vias);bundle.pads.push(...candidate.pads);temporary.push(...itemPrimitives(candidate));}
             }
             if(!best||bundle.pads.length>best.pads.length)best=bundle;
             if(bundle.pads.length===entries.length)break;
@@ -115,6 +115,53 @@ function createRamenFanout(geometry) {
           await new Promise(r=>setTimeout(r,0));
         }
         if(best?.pads.length===entries.length)break;
+      }
+      if(best&&best.pads.length<entries.length&&entries.length<=12&&!cancelled()){
+        const rowDeadline=Math.min(deadline,Date.now()+15000);
+        // Reconsider each checked escape as a constraint choice; a whole row
+        // need not put every via on the same normal-distance line.
+        for(let i=0;i<entries.length;i++){
+          if(cancelled()||Date.now()>rowDeadline)break;
+          await new Promise(r=>setTimeout(r,0));
+          const entry=entries[i];
+          for(const sign of [1,-1])for(const offsetFactor of [2,2.5,3,3.5,4,4.5,5,6,7,8,10,12])for(const deltaFactor of [-2,-1.5,-1,-.75,-.5,-.25,0,.25,.5,.75,1,1.5,2])for(const shoulderFactor of [.05,.3,.55]){
+            const normal=row.axis.map(v=>v*sign),offset=offsetFactor*width,t=entry.t+deltaFactor*width;
+            const end=[row.axis[0]*(centerN+sign*offset)+row.tangent[0]*t,row.axis[1]*(centerN+sign*offset)+row.tangent[1]*t];
+            const candidate=bundleFor(entry,end,normal,Math.min(entry.geometry.longSpan/2+width*shoulderFactor,offset));
+            if(candidate&&legalBundle(candidate))choices[i].push(candidate);
+          }
+        }
+        const all=choices.map(list=>{const seen=new Set();return list.filter(b=>{const v=b.vias[0],k=[v.x,v.y,...b.traces.flatMap(t=>t.points.flat())].join('|');if(seen.has(k))return false;seen.add(k);b._primitives=itemPrimitives(b);return true;});});
+        for(const list of all)list.sort((a,b)=>{const cost=x=>x.traces.reduce((s,t)=>s+t.points.slice(1).reduce((v,p,i)=>v+dist(p,t.points[i]),0),0);return cost(a)-cost(b);});
+        let work=0,complete=null,uid=0,exhausted=false;
+        for(const list of all)for(const b of list)b._uid=uid++;
+        const checked=new Map();
+        const compatible=(a,b)=>{
+          const k=a._uid*uid+b._uid;
+          if(checked.has(k))return checked.get(k);
+          const valid=a._primitives.every(p=>b._primitives.every(q=>{
+            if(p.layer!==q.layer||sameNet(p.net,q.net))return true;
+            const distance=G.distanceShapes(p.shape,q.shape);
+            return distance>=EPS&&distance+EPS>=G.clearance(board,nets.get(p.net),nets.get(q.net));
+          }));
+          if(checked.size>=500000)checked.clear();
+          checked.set(k,valid);return valid;
+        };
+        async function searchChoices(domains,chosen){
+          if(++work>12000||cancelled()||Date.now()>rowDeadline){exhausted=true;return;}
+          if(complete)return;
+          if(!domains.length){complete=chosen;return;}
+          if(work%128===0)await new Promise(r=>setTimeout(r,0));
+          domains.sort((a,b)=>a.length-b.length);
+          if(!domains[0].length)return;
+          for(const candidate of domains[0]){
+            if(complete||exhausted)break;
+            const remaining=domains.slice(1).map(d=>d.filter(other=>compatible(candidate,other)));
+            await searchChoices(remaining,chosen.concat(candidate));
+          }
+        }
+        await searchChoices(all,[]);
+        if(complete){best={traces:complete.flatMap(b=>b.traces),vias:complete.flatMap(b=>b.vias),pads:complete.flatMap(b=>b.pads)};}
       }
       if(best&&best.pads.length){commit(best);rowCount++;emit({type:'progress',phase:'fanout',message:'Checked off-grid fanout: '+(board.vias.length-initialVias)+' new escape vias.'});}
       await new Promise(r=>setTimeout(r,0));

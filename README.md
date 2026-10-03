@@ -37,6 +37,9 @@ Use the board preview to zoom, pan and show or hide layers. The job overview
 shows progress and any connections still waiting to be routed. You can stop a
 job, adjust the settings and try again.
 
+With **Smart search** enabled, RamenRouter makes a final focused attempt when
+only a few connections remain. It keeps the best checked result throughout.
+
 **Stop job** stops routing and keeps the best checked attempt. Choose **View
 best result** to see the remaining connections and placement advice, or **Keep
 stopped** to leave the job stopped. Viewing a result does not restart routing.
