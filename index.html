@@ -25,7 +25,7 @@
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M5 20h30c-1 10-7 15-15 15S6 30 5 20Zm6 15h18M10 7v5h8v8m9-16v8h-4v8M4 15h13M25 15h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="5" r="2" fill="currentColor"/><circle cx="27" cy="3" r="2" fill="currentColor"/></svg>
       <span>Ramen<span class="brand-light">Router</span><span class="brand-caption">PCB ROUTING WORKBENCH</span></span>
     </div>
-    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.2</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
+    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.3</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
     <div class="connection" id="connection"><span class="status-dot"></span><span id="connectionText">Starting browser engine</span></div>
     <button class="icon-button help-button" id="helpButton" title="About this workbench" aria-label="About this workbench">?</button>
   </header>
@@ -65,7 +65,7 @@
         <div class="number-settings"><label for="maxPasses">Routing attempts <input type="number" id="maxPasses" name="maxPasses" min="1" max="100" step="1" value="12"><span>Includes repairs and fresh starts</span></label><label for="timeoutMinutes">Time limit <div class="number-unit"><input type="number" id="timeoutMinutes" name="timeoutMinutes" min="1" max="1440" step="1" value="30"><span>min</span></div><span>Entire job</span></label></div>
       </form>
       </div>
-      <div class="run-controls"><button class="primary-button" id="runButton" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6V4Z" fill="currentColor"/></svg><span id="runLabel">Start routing</span><span class="button-shortcut">↵</span></button><button class="stop-button" id="stopButton" hidden><span class="stop-square"></span>Stop job</button><button class="force-stop-button" id="forceStopButton" hidden>Force stop</button><p class="run-hint" id="runHint">Load a board to begin.</p></div>
+      <div class="run-controls"><button class="primary-button" id="runButton" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6V4Z" fill="currentColor"/></svg><span id="runLabel">Start routing</span><span class="button-shortcut">↵</span></button><button class="stop-button" id="stopButton" hidden><span class="stop-square"></span>Stop job</button><button class="force-stop-button" id="forceStopButton" hidden>Force stop</button><button class="view-stopped-button" id="viewStoppedResult" type="button" hidden>View best result</button><p class="run-hint" id="runHint">Load a board to begin.</p></div>
       <div class="sidebar-foot"><span class="lock-icon" aria-hidden="true">⌁</span> Your board stays on this computer.</div>
     </aside>
 
@@ -88,12 +88,23 @@
       <div class="inspector-scroll">
       <div class="section-kicker"><span class="section-number">03</span> JOB OVERVIEW</div>
       <div class="job-state" id="jobState"><span class="job-state-icon" id="jobStateIcon">○</span><div><h2 id="stateTitle">Ready when you are</h2><p id="phaseLabel">No active job</p></div></div>
+      <section class="stop-result-prompt" id="stopResultPrompt" aria-labelledby="stopResultTitle" hidden>
+        <h3 id="stopResultTitle">Routing stopped</h3>
+        <p id="stopResultDetail" role="status" aria-live="polite"></p>
+        <div class="stop-result-actions"><button id="viewBestResult" type="button">View best result</button><button id="keepStopped" type="button">Keep stopped</button></div>
+      </section>
       <div class="elapsed-row"><span>Elapsed time</span><strong id="elapsedValue">—</strong></div>
       <div class="phase-track" id="phaseTrack" aria-label="Routing stages"><span data-stage="input" title="Input"></span><span data-stage="fanout" title="Optional fanout"></span><span data-stage="route" title="Routing"></span><span data-stage="optimize" title="Optimization"></span><span data-stage="done" title="Complete"></span></div>
       <div class="phase-caption"><span id="phaseCaption">Waiting for a board</span><span id="passLabel"></span></div>
       <div class="stats-grid" id="statsGrid"><div class="stat-card"><span>Unrouted</span><strong id="unroutedValue">—</strong><small id="unroutedChange">No board loaded</small></div><div class="stat-card"><span>Vias</span><strong id="viasValue">—</strong><small id="viasChange">No board loaded</small></div><div class="stat-card"><span>Trace length · mm</span><strong id="tracesValue">—</strong><small id="tracesChange">No board loaded</small></div><div class="stat-card"><span>Rule issues</span><strong id="connectionsValue">—</strong><small id="connectionsChange">Final check pending</small></div></div>
       <div class="width-check"><span>Below net width</span><strong id="widthValue">—</strong><small id="widthDetail">Check pending</small></div>
       <div class="job-error" id="jobError" hidden></div>
+      <section class="remaining-routes" id="remainingRoutes" aria-labelledby="remainingRoutesTitle" hidden>
+        <h3 id="remainingRoutesTitle">Connections still missing</h3>
+        <p id="remainingRoutesDetail"></p>
+        <div id="remainingRoutesList" class="remaining-routes-list"></div>
+        <p class="remaining-routes-help">Gold dashed lines mark the gaps. Choose a net to find it on the board.</p>
+      </section>
       <section class="placement-advice" id="placementAdvice" aria-labelledby="placementAdviceTitle" hidden>
         <div class="advice-heading"><h3 id="placementAdviceTitle">Placement advice</h3><span class="advice-check-label">REROUTE TO CHECK</span></div>
         <p class="advice-intro">Possible changes to try in your PCB editor. Reroute afterward to check whether they help.</p>
@@ -114,10 +125,11 @@
       </div>
       <div class="export-controls">
       <div class="section-kicker">EXPORT RESULTS</div>
+      <p class="export-ready-message" id="exportReadyMessage" role="status" aria-live="polite" hidden>All connections routed. Your routing session is ready to export.</p>
       <button id="downloadSes" class="export-button" disabled><span class="export-file-type">SES</span><span><strong>Routing session</strong><small>Import into your PCB editor</small></span><span class="download-arrow" aria-hidden="true">↓</span></button>
       <div class="secondary-downloads"><button id="downloadDsn" class="text-button" disabled>Routed DSN <span aria-hidden="true">↓</span></button><button id="downloadChecks" class="text-button" disabled>Check report <span aria-hidden="true">↓</span></button><button id="downloadLog" class="text-button" disabled>Engine log <span aria-hidden="true">↓</span></button></div>
       <p class="export-note">Check clearances, connectivity and design rules in your PCB editor before manufacturing.</p>
-      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.2</span><span>Independent browser engine · GPL-3.0</span></div>
+      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.3</span><span>Independent browser engine · GPL-3.0</span></div>
       </div>
     </aside>
   </main>

@@ -18,9 +18,8 @@ computer, and you can download the app for offline use.
 
 ## Use it offline
 
-Download **RamenRouter-0.2.2.zip** from the
-[latest release](https://github.com/Effishen/RamenRouter/releases/latest), extract
-the whole folder, and double-click **index.html**. Keep all the supplied files
+Download the [current RamenRouter folder](https://github.com/Effishen/RamenRouter/archive/refs/heads/main.zip),
+extract the whole folder, and double-click **index.html**. Keep all the supplied files
 together in that folder. No internet connection is needed for the downloaded app.
 
 ![RamenRouter showing a routed example board](images/demo.png)
@@ -33,6 +32,13 @@ before exporting the .dsn file.
 Use the board preview to zoom, pan and show or hide layers. The job overview
 shows progress and any connections still waiting to be routed. You can stop a
 job, adjust the settings and try again.
+
+**Stop job** stops routing and keeps the best checked attempt. Choose **View
+best result** to see the remaining connections and placement advice, or **Keep
+stopped** to leave the job stopped. Viewing a result does not restart routing.
+
+Gentle highlights point to the next useful action: loading a board, starting a
+run, reviewing advice or downloading a completed routing session.
 
 If connections remain and vias in surface-mount pads could help, RamenRouter
 offers **Enable and reroute**. This changes a board rule, so use it only if

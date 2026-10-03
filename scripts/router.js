@@ -34,6 +34,10 @@ function createRamenRouter(geometry, optimizer, fanout) {
       else say('Fanout did not pass the full geometry check; keeping the imported board.',{phase:'checking'});
     }
     let best=copy(original),bestStats=stats(original);
+    const checkpoint=(pass=0)=>emit({type:'checkpoint',phase:'routing',pass,board:copy(best),stats:bestStats});
+    // Only fully checked best boards become interruption-safe snapshots. Live
+    // progress may contain a worse rip-up attempt and is never a checkpoint.
+    checkpoint();
     if(options.fanoutOnly){if(!fanout)throw new Error('The offline fanout module is not loaded.');return{board:best,stats:bestStats,initialStats,log,stopped:stopped()};}
     const span=Math.max(original.bounds.maxX-original.bounds.minX,original.bounds.maxY-original.bounds.minY);
     const widths=original.nets.map(n=>n.width).filter(w=>w>0);
@@ -179,12 +183,12 @@ function createRamenRouter(geometry, optimizer, fanout) {
       let queue=order.filter(n=>!repairMode||failures.has(n.id)),attempts=new Map(),currentFailures=new Set(),processed=0,maxWork=nets.length*(pass===1?2:3);
       while(queue.length&&processed<maxWork&&!stopped()){
         let net=queue.shift(),count=(attempts.get(net.id)||0)+1;attempts.set(net.id,count);if(count>3){currentFailures.add(net.id);continue;}if(!repairMode)removeNet(net.id);let result=await routeNet(net,pass>1&&count<3,repairMode);processed++;if(result.failed)currentFailures.add(net.id);else currentFailures.delete(net.id);for(const id of result.ripped){let n=rules.get(id);if(n&&!queue.some(x=>x.id===id))queue.push(n);currentFailures.add(id);}
-        if(G.connectivity(board).unrouted<bestStats.unrouted){let checkpoint=stats(board,true);if(scoreBetter(checkpoint,bestStats)){best=copy(board);bestStats=checkpoint;}}
+        if(G.connectivity(board).unrouted<bestStats.unrouted){let candidateStats=stats(board,true);if(scoreBetter(candidateStats,bestStats)){best=copy(board);bestStats=candidateStats;checkpoint(pass);}}
         if(processed%3===0){emit({type:'progress',phase:'routing',pass,message:'Pass '+pass+' · net '+processed+'/'+maxWork,board:copy(board),stats:stats(board,false)});await yieldNow();}
       }
-      emit({type:'progress',phase:'checking',pass,message:'Checking full clearances and connectivity'});await yieldNow();let measured=stats(board,true);if(scoreBetter(measured,bestStats)){best=copy(board);bestStats=measured;}failures=new Set(G.connectivity(best).components.filter(c=>c.groups.length>1).map(c=>c.net));say('Pass '+pass+': '+measured.unrouted+' remaining, '+measured.viaCount+' vias; best '+bestStats.unrouted+' remaining.',{phase:'routing',pass,board:copy(best),stats:bestStats});if(bestStats.unrouted===0)break;
+      emit({type:'progress',phase:'checking',pass,message:'Checking full clearances and connectivity'});await yieldNow();let measured=stats(board,true);if(scoreBetter(measured,bestStats)){best=copy(board);bestStats=measured;checkpoint(pass);}failures=new Set(G.connectivity(best).components.filter(c=>c.groups.length>1).map(c=>c.net));say('Pass '+pass+': '+measured.unrouted+' remaining, '+measured.viaCount+' vias; best '+bestStats.unrouted+' remaining.',{phase:'routing',pass,board:copy(best),stats:bestStats});if(bestStats.unrouted===0)break;
     }
-    if(options.optimize!==false&&optimizer&&!stopped()){emit({type:'progress',phase:'optimizing',message:'Refining the checked route'});const optimized=await optimizer.optimize(copy(best),options,emit,stopped);let candidate=stats(optimized,true);if(scoreBetter(candidate,bestStats)){best=optimized;bestStats=candidate;}}
+    if(options.optimize!==false&&optimizer&&!stopped()){emit({type:'progress',phase:'optimizing',message:'Refining the checked route'});const optimized=await optimizer.optimize(copy(best),options,emit,stopped);let candidate=stats(optimized,true);if(scoreBetter(candidate,bestStats)){best=optimized;bestStats=candidate;checkpoint(passes);}}
     emit({type:'progress',phase:'checking',board:copy(best),stats:bestStats,message:bestStats.unrouted+' connection(s) remaining.'});
     return{board:best,stats:bestStats,initialStats,log,stopped:stopped()};
   }

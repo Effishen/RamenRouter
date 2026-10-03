@@ -359,3 +359,27 @@ dialog p{font-size:16px;line-height:1.65}
 .advice-evidence .advice-detail{margin:8px 0 11px}
 
 .advice-jump>svg{width:18px;height:18px;flex-shrink:0}.advice-evidence summary{list-style-position:inside}
+
+/* Optional review after Stop: the engine stays stopped whichever action is chosen. */
+.stop-result-prompt{padding:14px;margin:0 0 17px;border:1px solid #6b816b;border-radius:7px;background:#21342e;color:#d5e5d9}
+.stop-result-prompt h3,.remaining-routes h3{font-size:17px;line-height:1.4;margin:0;font-weight:600;color:#e0eade}
+.stop-result-prompt p{font-size:14px;line-height:1.55;margin:9px 0 0;color:#c0d3c6}
+.stop-result-actions{display:flex;gap:8px;margin-top:12px}
+.stop-result-actions button{flex:1;min-width:0;min-height:44px;padding:9px 8px;font-size:15px;line-height:1.4;border:1px solid #708d79;border-radius:5px;background:#294336;color:#e3eee5}
+.stop-result-actions button:first-child{background:#add9ba;border-color:#add9ba;color:#163523;font-weight:600}
+.view-stopped-button{width:100%;min-height:40px;border:1px solid #536e64;border-radius:5px;background:#22362e;color:#d0e4d6;font-size:15px;line-height:1.4;margin-top:10px;padding:8px 12px}
+.remaining-routes{margin-top:18px;padding-top:17px;border-top:1px solid #3c5660}
+.remaining-routes>p{font-size:14px;line-height:1.55;color:#b5c9d0;margin:10px 0}
+.remaining-routes-list{display:flex;flex-direction:column;gap:7px;max-height:215px;overflow:auto;scrollbar-width:thin}
+.remaining-net-button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:9px 10px;min-height:42px;background:#29332b;border:1px solid #626548;border-radius:4px;text-align:left;color:#e5d8a9;font-size:15px;line-height:1.4}
+.remaining-net-button>span{overflow-wrap:anywhere;min-width:0}
+.remaining-net-button>small{font-size:13px;color:#babe9d;flex-shrink:0}
+.remaining-routes>.remaining-routes-help{font-size:13px;color:#aabbbe}
+.export-ready-message{font-size:14px;line-height:1.5;color:#c2e4cd;margin:0 0 10px}
+.export-button.export-ready{border-color:#a5d9ae;background:#253d31;box-shadow:0 0 0 2px #9bd3a72e;animation:action-attention 2.1s ease-in-out 4}
+.export-button.export-ready strong,.export-button.export-ready .download-arrow{color:#e0f5dc}
+.attention-cue{outline:2px solid #add39a;outline-offset:2px;animation:action-attention 2.1s ease-in-out 4}
+.placement-advice.attention-panel{border-color:#a4bf87;background:#22312566;border-radius:6px;padding:13px 10px;box-shadow:inset 0 0 0 1px #a4bf8744}
+@keyframes action-attention{0%,100%{box-shadow:0 0 0 1px #a5d99920}50%{box-shadow:0 0 0 5px #a5d99945}}
+@media(prefers-reduced-motion:reduce){.attention-cue,.export-button.export-ready{animation:none!important;box-shadow:0 0 0 2px #a5d99940}}
+@media(max-width:650px){.stop-result-prompt p,.remaining-routes>p{font-size:15px}.remaining-routes-list{max-height:260px}}

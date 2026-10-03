@@ -4,9 +4,9 @@
   const active = new Set(['inspecting','starting','running','stopping']);
   const subscribers = new Set();
   let job = null, worker = null, workerUrl = null, inputText = null;
-  let board = null, preview = null, exports = null, serial = 0, timer = null, watchdog = null;
+  let board = null, preview = null, exports = null, bestChecked = null, serial = 0, timer = null, watchdog = null;
   const logs = [];
-  const base = {appVersion:'0.2.2',engineVersion:'Ramen JS 0.2.2',fanoutVersion:'Ramen SMD escape'};
+  const base = {appVersion:'0.2.3',engineVersion:'Ramen JS 0.2.3',fanoutVersion:'Ramen SMD escape'};
   function notify() { for (const fn of subscribers) { try { fn(state()); } catch (_) {} } }
   function log(message) {
     logs.push(new Date().toLocaleTimeString() + '  ' + String(message));
@@ -18,6 +18,23 @@
     if(worker) {worker.onmessage=null;worker.onerror=null;worker.terminate();} worker=null;
     if(workerUrl) URL.revokeObjectURL(workerUrl); workerUrl=null;
     clearTimeout(timer); timer=null; clearTimeout(watchdog); watchdog=null;
+  }
+  function rememberChecked(m) {
+    if(!m.board||!m.preview||!m.exports||!m.stats?.drcChecked||!m.stats?.widthRulesChecked)return;
+    bestChecked={board:m.board,preview:m.preview,stats:m.stats,exports:m.exports,advice:m.advice||{items:[]},fromInput:!!m.fromInput};
+    job.bestResult={available:true,unrouted:m.stats.unrouted,traceCount:m.stats.traceCount,viaCount:m.stats.viaCount,fromInput:!!m.fromInput};
+  }
+  function stopWithBest(reason,message) {
+    kill();job.stopReason=reason;job.state=reason;job.phase=reason;job.endedAt=Date.now();job.suggestions={};
+    if(bestChecked) {
+      board=bestChecked.board;preview=bestChecked.preview;exports=bestChecked.exports;
+      job.stats={...bestChecked.stats};job.advice=bestChecked.advice;job.hasOutput=true;job.revision++;
+      log(message+' Best checked result retained: '+job.stats.unrouted+' incomplete.');
+    } else {
+      board=null;preview=null;exports=null;job.stats=null;job.advice={items:[]};job.hasOutput=false;
+      log(message+' No checked result was available yet.');
+    }
+    notify();return state();
   }
   function getSettings(value={}) {
     const s={fanout:true,fanoutOnly:false,optimize:true,deepSearch:true,viaInPad:false,maxPasses:12,timeoutMinutes:30,quality:'balanced',...value,neckdown:false};
@@ -75,6 +92,11 @@
         outlines:(b.outlines||[]).map(poly=>poly.map(p)),
         airwires:air.map(a=>({net:name(a.net),points:(a.points||[a.from,a.to]).map(p)}))};
     }
+    function checkedResult(result,initialBoard,options,name,initialStats,finalStats,fromInput=false) {
+      const report=geo.validate(result),advice=placementAdvice(result,initialBoard,!options.fanoutOnly);
+      return {board:result,preview:geometry(result),stats:finalStats,advice,fromInput,
+        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.3',settings:options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
+    }
     self.onmessage=async event=>{
       const m=event.data;
       if(m.type==='stop') {cancelled=true;return;}
@@ -83,7 +105,10 @@
         cancelled=false;deadline=Date.now()+(m.options?.timeoutMinutes||30)*60000;
         const b=dsn.parse(m.text,m.name);
         const initial=stats(b);
-        send({type:'loaded',board:b,preview:geometry(b),stats:initial,advice:placementAdvice(b,b,false),warnings:b.warnings||[]});
+        // Build the fallback before routing starts. Stop never has to validate,
+        // analyze or serialize copper on the UI thread after terminating work.
+        const initialResult=checkedResult(b,b,m.options,m.name,initial,initial,true);
+        send({type:'loaded',...initialResult,advice:placementAdvice(b,b,false),checkpointAdvice:initialResult.advice,warnings:b.warnings||[]});
         if(m.type==='inspect') {send({type:'ready'});return;}
         // Capture the original permissions before routing. This only identifies
         // relevant options; it does not predict that an override will succeed.
@@ -91,6 +116,10 @@
         let lastPreview=0;
         const out=await router.route(b,m.options,message=>{
           if(typeof message==='string') {send({type:'progress',message});return;}
+          if(message.type==='checkpoint') {
+            const fromInput=message.stats.traceCount===initial.traceCount&&message.stats.viaCount===initial.viaCount&&message.stats.unrouted===initial.unrouted;
+            send({type:'checkpoint',...checkedResult(message.board,b,m.options,m.name,initial,message.stats,fromInput),pass:message.pass});return;
+          }
           const data={type:'progress',phase:message.phase,pass:message.pass,message:message.message};
           if(message.board && Date.now()-lastPreview>750) {
             lastPreview=Date.now();data.board=message.board;data.preview=geometry(message.board);data.stats=stats(message.board,false);
@@ -98,26 +127,24 @@
           send(data);
         },()=>cancelled||Date.now()>=deadline);
         const result=out?.board||out||b, finalStats=stats(result);
-        const report=geo.validate(result);
         const endState=Date.now()>=deadline?'timed_out':(cancelled||out?.stopped?'stopped':'completed');
         const suggestions=endState==='completed'&&finalStats.unrouted>0&&padViaCandidates.size&&geo.connectivity(result).components.some(component=>component.groups.length>1&&padViaCandidates.has(component.net))?{viaInPad:true}:{};
-        const advice=endState==='completed'?placementAdvice(result,b,!m.options.fanoutOnly):{items:[]};
-        send({type:'done',state:endState,suggestions,advice,board:result,preview:geometry(result),stats:finalStats,
-          exports:{ses:dsn.exportSes(result,m.name),dsn:dsn.exportDsn(result,m.name),report:JSON.stringify({engine:'Ramen JS 0.2.2',settings:m.options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats:initial,stats:finalStats,checks:report,advice},null,2)},
+        send({type:'done',state:endState,suggestions,...checkedResult(result,b,m.options,m.name,initial,finalStats),
           message:finalStats.unrouted===0?(finalStats.totalViolations?'All connections routed, but '+finalStats.totalViolations+' rule issue(s) remain. Review them in your PCB editor.':'All connections routed. Verify the exported session in your PCB editor.'):finalStats.unrouted+' connections remain; best checked result retained.'});
       } catch(error) {send({type:'error',error:error.message||String(error),stack:error.stack||''});}
     };
   }
   function launch(type,options) {
-    kill(); exports=null; preview=null; board=null;
+    kill(); exports=null; preview=null; board=null; bestChecked=null;
     const id=++serial;
     const source='"use strict";\n'+[createRamenDSN,createRamenGeometry,createRamenOptimizer,createRamenFanout,createRamenRouter,createRamenAdvisor,workerMain].map(fn=>fn.toString()).join('\n')+'\nworkerMain();';
     workerUrl=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
     worker=new Worker(workerUrl);
-    job={id:String(id),name:job?.name||'board.dsn',state:type==='inspect'?'inspecting':'starting',phase:'loading',startedAt:Date.now(),settings:options,stats:null,initialStats:null,error:null,hasOutput:false,suggestions:{},advice:{items:[]},revision:0,pass:0};
+    job={id:String(id),name:job?.name||'board.dsn',state:type==='inspect'?'inspecting':'starting',phase:'loading',startedAt:Date.now(),settings:options,stats:null,initialStats:null,error:null,hasOutput:false,suggestions:{},advice:{items:[]},bestResult:{available:false},revision:0,pass:0};
     worker.onmessage=e=>{
-      if(id!==serial||!job)return;
+      if(id!==serial||!job||!active.has(job.state))return;
       const m=e.data;
+      if(m.type==='checkpoint') {rememberChecked(m);notify();return;}
       if(m.message)log(m.message);
       if(m.board)board=m.board;
       if(m.preview) {preview=m.preview;job.revision++;}
@@ -126,6 +153,7 @@
       if(m.pass!==undefined)job.pass=m.pass;
       if(m.type==='loaded') {
         job.initialStats=m.stats;
+        rememberChecked({...m,advice:m.checkpointAdvice||m.advice});
         job.advice=m.advice||{items:[]};
         log('Loaded '+job.name+': '+m.stats.netCount+' nets, '+m.stats.unrouted+' incomplete connections.');
         for(const w of m.warnings||[])log('Input note: '+w);
@@ -133,20 +161,20 @@
       }
       if(m.type==='ready') {job.state=job.stopReason||'ready';job.phase=job.state;job.endedAt=Date.now();kill();}
       if(m.type==='done') {
-        exports=m.exports;job.hasOutput=true;job.state=job.stopReason||m.state;job.phase=job.state;job.endedAt=Date.now();
+        rememberChecked(m);exports=m.exports;job.hasOutput=true;job.state=job.stopReason||m.state;job.phase=job.state;job.endedAt=Date.now();
         job.suggestions=job.state==='completed'?(m.suggestions||{}):{};
-        job.advice=job.state==='completed'?(m.advice||{items:[]}):{items:[]};
+        job.advice=m.advice||{items:[]};
         log('Checked result: '+job.stats.unrouted+' incomplete, '+(job.stats.totalViolations??job.stats.clearanceViolations)+' rule issues, '+job.stats.belowNominalWidthTraceCount+' undersized traces.');
         kill();
       }
       if(m.type==='error') {job.state='error';job.phase='error';job.error=m.error;job.endedAt=Date.now();log('Error: '+m.error);if(m.stack)log(m.stack);kill();}
       notify();
     };
-    worker.onerror=e=>{if(id!==serial||!job)return;job.error=e.message||'Browser worker failed to start. Use a current Chrome, Edge or Firefox browser.';job.state='error';job.phase='error';job.endedAt=Date.now();log(job.error);kill();notify();};
+    worker.onerror=e=>{if(id!==serial||!job||!active.has(job.state))return;job.error=e.message||'Browser worker failed to start. Use a current Chrome, Edge or Firefox browser.';job.state='error';job.phase='error';job.endedAt=Date.now();log(job.error);kill();notify();};
     worker.postMessage({type,text:inputText,name:job.name,options});
     const timeLimit=type==='run'?options.timeoutMinutes*60000:120000;
-    timer=setTimeout(()=>{if(job&&active.has(job.state)){job.stopReason='timed_out';job.state='stopping';job.phase='stopping';log('Time budget reached; requesting a checked partial result.');worker?.postMessage({type:'stop'});notify();}},timeLimit);
-    watchdog=setTimeout(()=>{if(id===serial&&job&&active.has(job.state)){kill();job.state='timed_out';job.phase='timed_out';job.endedAt=Date.now();job.hasOutput=false;log('The worker exceeded the stop grace period and was terminated. Unchecked work was not exported.');notify();}},timeLimit+30000);
+    timer=setTimeout(()=>{if(id===serial&&job&&active.has(job.state))stopWithBest('timed_out','Time budget reached.');},timeLimit);
+    watchdog=setTimeout(()=>{if(id===serial&&job&&active.has(job.state))stopWithBest('timed_out','The worker exceeded its time budget and was terminated.');},timeLimit+30000);
     notify();return state();
   }
   function requireIdle(){if(job&&active.has(job.state))throw new Error('Stop the current operation before starting another.');}
@@ -176,15 +204,13 @@
     }
     if(endpoint==='/api/stop') {
       if(!job||!active.has(job.state))return state();
-      if(data?.force){kill();job.state='stopped';job.phase='stopped';job.endedAt=Date.now();job.hasOutput=false;log('Worker terminated. An unchecked partial route is not exported.');}
-      else {job.stopReason=job.stopReason||'stopped';job.state='stopping';job.phase='stopping';worker?.postMessage({type:'stop'});log('Stop requested. Waiting for the engine to return its best checked board.');}
-      notify();return state();
+      return stopWithBest(job.stopReason||'stopped','Stopped immediately.');
     }
     if(endpoint==='/api/download') {
       const type=params.get('type')||'ses',result=getDownload(type);
       return {blob:result.blob,disposition:'attachment; filename="'+result.filename+'"'};
     }
-    if(endpoint==='/api/quit') {kill();serial++;job=null;board=null;preview=null;exports=null;inputText=null;logs.length=0;notify();return state();}
+    if(endpoint==='/api/quit') {kill();serial++;job=null;board=null;preview=null;exports=null;bestChecked=null;inputText=null;logs.length=0;notify();return state();}
     throw new Error('Unknown local action.');
   }
   function getDownload(type) {

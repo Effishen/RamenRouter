@@ -23,6 +23,14 @@
   let adviceRenderKey = '';
   let announcedAdviceJobId = null;
   let focusedAdvice = null;
+  let dismissedStopJobId = null;
+  let viewedStopJobId = null;
+  let announcedStopJobId = null;
+  let announcedExportJobId = null;
+  let downloadedSesJobId = null;
+  let remainingRenderKey = '';
+  const acknowledgedAttention = new Set();
+  let activeAttentionKey = null;
   const visibleLayers = new Map();
   let layerColors = new Map();
   const canvas = $('boardCanvas');
@@ -118,8 +126,134 @@
     if (stopping) hint = forcedStop ? 'Force stop requested.' : 'Finishing the current operation…';
     if (!connected) hint = 'Waiting for the browser engine.';
     $('runHint').textContent = hint;
+    updateStoppedFeedback();
     updateViaSuggestion();
+    updateRemainingRoutes();
     updatePlacementAdvice();
+    updateExportAttention();
+    updateAttention();
+  }
+
+  function acknowledgeAttention(key = activeAttentionKey) {
+    if (key) acknowledgedAttention.add(key);
+    updateAttention();
+  }
+
+  function updateAttention() {
+    const job = currentState?.job;
+    let key = null, target = null;
+    if (connected && !busy && !isActive()) {
+      if (!job || job.state === 'idle') { key = 'import'; target = $('dropzone'); }
+      else if (job.state === 'stopped' && !$('stopResultPrompt').hidden) { key = `stopped:${job.id}`; target = $('stopResultPrompt'); }
+      else if (!$('placementAdvice').hidden && !acknowledgedAttention.has(`advice:${job.id}`)) { key = `advice:${job.id}`; target = $('showPlacementAdvice'); }
+      else if (job.state === 'ready') { key = `start:${job.id}`; target = $('runButton'); }
+      else if (!$('remainingRoutes').hidden && $('placementAdvice').hidden && job.state !== 'stopped') { key = `remaining:${job.id}`; target = $('remainingRoutes'); }
+    }
+    if (key && acknowledgedAttention.has(key)) { key = null; target = null; }
+    for (const node of [$('dropzone'), $('runButton'), $('stopResultPrompt'), $('showPlacementAdvice'), $('remainingRoutes')]) node.classList.toggle('attention-cue', node === target);
+    $('placementAdvice').classList.toggle('attention-panel', target === $('showPlacementAdvice'));
+    activeAttentionKey = key;
+  }
+
+  function currentBoardKey() {
+    const job = currentState?.job;
+    return `${job?.id}|${currentState?.boardRevision ?? job?.revision ?? ''}|${job?.state}|${job?.phase || ''}`;
+  }
+
+  function stoppedResultAvailable() {
+    const job = currentState?.job;
+    return Boolean(job?.state === 'stopped' && job.bestResult?.available && outputAvailable('ses'));
+  }
+
+  function updateStoppedFeedback() {
+    const job = currentState?.job;
+    const stopped = job?.state === 'stopped';
+    const available = stoppedResultAvailable();
+    const show = stopped && dismissedStopJobId !== job.id && viewedStopJobId !== job.id;
+    $('stopResultPrompt').hidden = !show;
+    $('viewStoppedResult').hidden = !available || show;
+    $('viewStoppedResult').disabled = busy || !connected || !board || boardKey !== currentBoardKey();
+    $('viewBestResult').hidden = !available;
+    $('viewBestResult').disabled = !available || busy || !board || boardKey !== currentBoardKey();
+    if (!show) return;
+    const count = job.bestResult?.unrouted ?? job.stats?.unrouted;
+    const remaining = Number.isFinite(count) ? `${number(count)} ${count === 1 ? 'connection remains' : 'connections remain'}.` : '';
+    let detail = available ? (job.bestResult.fromInput ? `The best checked result is still your original board. ${remaining}` : `The best checked result is saved. ${remaining}`) : 'Routing has stopped. No checked result was available yet. You can start a new run when ready.';
+    const issues = job.stats?.totalViolations ?? job.stats?.clearanceViolations;
+    if (available && issues > 0) detail += ` ${number(issues)} ${issues === 1 ? 'rule issue needs' : 'rule issues need'} review.`;
+    if (available) detail += ' View it to inspect any missing routes and available advice. Routing will stay stopped.';
+    if ($('stopResultDetail').textContent !== detail) $('stopResultDetail').textContent = detail;
+    if (announcedStopJobId !== job.id) {
+      clearTimeout(toastTimer); $('toast').hidden = true;
+      announcedStopJobId = job.id;
+      requestAnimationFrame(() => { if (!$('stopResultPrompt').hidden) $('stopResultPrompt').scrollIntoView({ block: 'nearest' }); });
+    }
+  }
+
+  function viewBestResult() {
+    const job = currentState?.job;
+    if (!stoppedResultAvailable() || !board || boardKey !== currentBoardKey() || busy) return;
+    acknowledgedAttention.add(`stopped:${job.id}`);
+    dismissedStopJobId = job.id;
+    viewedStopJobId = job.id;
+    announcedAdviceJobId = job.id;
+    clearAdviceFocus();
+    $('showAirwires').checked = true;
+    $('showPads').checked = true;
+    for (const layer of board.layers || []) visibleLayers.set(layerKey(layer.id), true);
+    updateLayers(); fitBoard(); updateControls();
+    $('canvasLabelText').textContent = job.bestResult.fromInput ? 'Original checked board · routing stopped' : 'Best checked result · routing stopped';
+    const target = !$('remainingRoutes').hidden ? $('remainingRoutes') : (!$('placementAdvice').hidden ? $('placementAdvice') : $('jobState'));
+    target.scrollIntoView({ block: 'start' });
+    if (window.innerWidth > 900) canvas.scrollIntoView({ block: 'nearest' });
+  }
+
+  function updateRemainingRoutes() {
+    const job = currentState?.job;
+    const show = terminalStates.has(job?.state) && !job.settings?.fanoutOnly && job.stats?.unrouted > 0 &&
+      (job.state !== 'stopped' || viewedStopJobId === job.id) && board && boardKey === currentBoardKey();
+    $('remainingRoutes').hidden = !show;
+    if (!show) { remainingRenderKey = ''; return; }
+    const groups = new Map();
+    for (const wire of board.airwires || []) {
+      const name = wire.net || 'Unnamed net';
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(wire);
+    }
+    const key = JSON.stringify([job.id, job.revision, [...groups.keys()], job.stats.unrouted]);
+    if (remainingRenderKey === key) return;
+    remainingRenderKey = key;
+    $('remainingRoutesDetail').textContent = `${number(job.stats.unrouted)} ${job.stats.unrouted === 1 ? 'connection remains' : 'connections remain'} across ${number(groups.size)} ${groups.size === 1 ? 'net' : 'nets'}.`;
+    const container = $('remainingRoutesList'); container.replaceChildren();
+    for (const [name, wires] of groups) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'remaining-net-button';
+      const label = document.createElement('span'); label.textContent = name;
+      const count = document.createElement('small'); count.textContent = `${wires.length} ${wires.length === 1 ? 'gap' : 'gaps'} · Show`;
+      button.append(label, count);
+      button.addEventListener('click', () => {
+        const points = wires.flatMap(wire => wire.points || []).filter(point => Array.isArray(point) && point.length === 2 && point.every(Number.isFinite));
+        if (!points.length) return;
+        const area = [Math.min(...points.map(p => p[0])), Math.min(...points.map(p => p[1])), Math.max(...points.map(p => p[0])), Math.max(...points.map(p => p[1]))];
+        $('showAirwires').checked = true;
+        focusAdviceArea({ net: name, area }, -1, `${name} · missing connections`);
+      });
+      container.append(button);
+    }
+  }
+
+  function updateExportAttention() {
+    const job = currentState?.job, stats = job?.stats;
+    const clean = job?.state === 'completed' && !job.settings?.fanoutOnly && outputAvailable('ses') &&
+      stats?.unrouted === 0 && (stats.totalViolations ?? stats.clearanceViolations) === 0 &&
+      stats.belowNominalWidthTraceCount === 0 && stats.drcChecked && stats.widthRulesChecked;
+    const show = Boolean(clean && downloadedSesJobId !== job.id && !busy);
+    $('downloadSes').classList.toggle('export-ready', show);
+    $('exportReadyMessage').hidden = !show;
+    if (show && announcedExportJobId !== job.id) {
+      clearTimeout(toastTimer); $('toast').hidden = true;
+      announcedExportJobId = job.id;
+      requestAnimationFrame(() => { if ($('downloadSes').classList.contains('export-ready')) $('downloadSes').scrollIntoView({ block: 'nearest' }); });
+    }
   }
 
   function canSuggestViaInPad() {
@@ -158,12 +292,12 @@
     const needsWork = (job?.stats?.unrouted || 0) > 0 || (job?.stats?.totalViolations ?? job?.stats?.clearanceViolations ?? 0) > 0;
     const finished = terminalStates.has(job?.state) && !job?.settings?.fanoutOnly;
     const items = (job?.state === 'ready' ? supplied.filter(item => item.kind === 'existing_short') : (finished && needsWork ? supplied : [])).slice(0, 3);
-    const show = items.length > 0 && !isActive();
+    const show = items.length > 0 && !isActive() && (job?.state !== 'stopped' || viewedStopJobId === job.id);
     $('placementAdvice').hidden = !show;
     $('showPlacementAdvice').hidden = !show;
     $('placementAdviceCount').textContent = show ? String(items.length) : '';
     if (!show) {
-      if (focusedAdvice) clearAdviceFocus();
+      if (focusedAdvice && focusedAdvice.index >= 0) clearAdviceFocus();
       adviceRenderKey = '';
       return;
     }
@@ -213,7 +347,7 @@
       }
     }
     for (const button of $('placementAdviceItems').querySelectorAll('.advice-show-area')) button.disabled = !board || busy;
-    if (announcedAdviceJobId !== job.id && !canSuggestViaInPad()) {
+    if (announcedAdviceJobId !== job.id && !canSuggestViaInPad() && job.state !== 'stopped') {
       announcedAdviceJobId = job.id;
       requestAnimationFrame(() => { if (!$('placementAdvice').hidden) $('placementAdvice').scrollIntoView({ block: 'start' }); });
     }
@@ -226,9 +360,11 @@
     draw();
   }
 
-  function focusAdviceArea(item, index) {
+  function focusAdviceArea(item, index, label) {
     const bounds = adviceArea(item);
     if (!board || !bounds) return;
+    if (index >= 0) acknowledgeAttention(`advice:${currentState?.job?.id}`);
+    else acknowledgeAttention(`remaining:${currentState?.job?.id}`);
     focusedAdvice = { item, bounds, jobId: currentState?.job?.id, index };
     const boardBounds = getBounds();
     const boardSpan = boardBounds ? Math.max(boardBounds[2] - boardBounds[0], boardBounds[3] - boardBounds[1]) : Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
@@ -240,7 +376,7 @@
     view.y = view.height / 2 + (bounds[1] + bounds[3]) / 2 * view.scale;
     $('showPads').checked = true;
     if (Number.isInteger(item.evidence?.layer)) { visibleLayers.set(layerKey(item.evidence.layer), true); updateLayers(); }
-    $('adviceFocusLabel').textContent = `Suggestion ${index + 1} · highlighted area`;
+    $('adviceFocusLabel').textContent = label || `Suggestion ${index + 1} · highlighted area`;
     $('adviceFocusChip').hidden = false;
     for (const [i, card] of [...$('placementAdviceItems').children].entries()) card.classList.toggle('focused', i === index);
     updateZoom(); draw();
@@ -324,7 +460,7 @@
     $('elapsedValue').textContent = seconds(job?.elapsedSeconds);
     $('jobError').hidden = !job?.error;
     $('jobError').textContent = job?.error ? String(job.error) : '';
-    $('canvasLabelText').textContent = active ? 'Engine snapshot' : (job?.state === 'ready' ? 'Input board' : (hasJob ? 'Latest board snapshot' : ''));
+    $('canvasLabelText').textContent = active ? 'Engine snapshot' : (job?.state === 'ready' ? 'Input board' : (job?.state === 'stopped' && job.bestResult?.available ? (job.bestResult.fromInput ? 'Original checked board · routing stopped' : 'Best checked result · routing stopped') : (hasJob ? 'Latest board snapshot' : '')));
     applyStats(job);
     updatePhases(job);
     const logs = Array.isArray(job?.log) ? job.log.map(line => typeof line === 'string' ? line : JSON.stringify(line)) : [];
@@ -339,6 +475,9 @@
     if (hasJob && job.id !== lastJobId) {
       if (focusedAdvice) clearAdviceFocus();
       lastJobId = job.id;
+      acknowledgedAttention.clear();
+      dismissedStopJobId = viewedStopJobId = announcedStopJobId = announcedExportJobId = downloadedSesJobId = null;
+      remainingRenderKey = '';
       boardKey = '';
       board = null;
       visibleLayers.clear();
@@ -347,7 +486,7 @@
     }
     updateControls();
     if (hasJob) {
-      const nextKey = `${job.id}|${state.boardRevision ?? job.revision ?? ''}|${job.state}|${job.phase || ''}`;
+      const nextKey = currentBoardKey();
       if (nextKey !== boardKey) void loadBoard(nextKey, !board);
     }
   }
@@ -371,7 +510,7 @@
     if (!board) $('boardBusy').hidden = false;
     try {
       const geometry = await api('/api/board');
-      if (!geometry || !Array.isArray(geometry.layers)) return;
+      if (!geometry || !Array.isArray(geometry.layers) || key !== currentBoardKey()) return;
       board = geometry;
       boardKey = key;
       updateLayers();
@@ -382,7 +521,7 @@
       if (bounds) parts.push(`${number(bounds[2] - bounds[0], 1)} × ${number(bounds[3] - bounds[1], 1)} mm`);
       $('geometrySummary').textContent = parts.join(' · ');
       if (fit) fitBoard(); else draw();
-      updatePlacementAdvice();
+      updateControls();
     } catch (error) {
       if (!board) $('geometrySummary').textContent = 'Board geometry is not available yet';
     } finally { fetchingBoard = false; $('boardBusy').hidden = true; }
@@ -529,7 +668,7 @@
       }
     }
     if ($('showAirwires').checked) {
-      ctx.strokeStyle = '#c8b875'; ctx.lineWidth = .8; ctx.globalAlpha = .46; ctx.setLineDash([3, 4]);
+      ctx.strokeStyle = '#dfc77e'; ctx.lineWidth = viewedStopJobId === currentState?.job?.id ? 1.5 : .8; ctx.globalAlpha = viewedStopJobId === currentState?.job?.id ? .9 : .46; ctx.setLineDash([3, 4]);
       for (const wire of board.airwires || []) {
         const points = Array.isArray(wire) ? wire : wire.points;
         if (path(points)) ctx.stroke();
@@ -582,6 +721,7 @@
       $('viaInPad').checked = true;
       document.querySelector('.advanced-rules').open = true;
     }
+    acknowledgeAttention();
     busy = true; updateControls();
     try { saveSettings(); await post('/api/run', getSettings()); }
     catch (error) { toast(error.message, true); }
@@ -610,6 +750,7 @@
   }
 
   async function download(type) {
+    if (type === 'ses') { downloadedSesJobId = currentState?.job?.id; updateExportAttention(); }
     try {
       if (!nativeEngine || typeof nativeEngine.download !== 'function') throw new Error('Browser downloads are unavailable. Reopen index.html.');
       await nativeEngine.download(type);
@@ -617,7 +758,7 @@
     } catch (error) { toast(error.message, true); }
   }
 
-  $('dropzone').addEventListener('click', () => $('fileInput').click());
+  $('dropzone').addEventListener('click', () => { acknowledgeAttention(); $('fileInput').click(); });
   $('replaceButton').addEventListener('click', () => $('fileInput').click());
   $('fileInput').addEventListener('change', event => void upload(event.target.files[0]));
   for (const eventName of ['dragenter', 'dragover']) document.addEventListener(eventName, event => {
@@ -627,6 +768,7 @@
   document.addEventListener('drop', event => { event.preventDefault(); $('dropzone').classList.remove('drag-over'); void upload(event.dataTransfer?.files[0]); });
   $('demoButton').addEventListener('click', async () => {
     if (busy || isActive()) return;
+    acknowledgeAttention();
     busy = true; updateControls();
     try { await post('/api/demo'); toast('Example board loaded. Choose your settings to try the engine.'); }
     catch (error) { toast(error.message, true); }
@@ -640,17 +782,20 @@
     dismissedSuggestionJobId = currentState?.job?.id;
     updateControls();
   });
+  $('viewBestResult').addEventListener('click', viewBestResult);
+  $('viewStoppedResult').addEventListener('click', viewBestResult);
+  $('keepStopped').addEventListener('click', () => { acknowledgeAttention(); dismissedStopJobId = currentState?.job?.id; updateControls(); });
   $('stopButton').addEventListener('click', async () => {
     $('stopButton').disabled = true;
-    try { await post('/api/stop'); stoppingSince ??= Date.now(); toast('Stop requested. The engine will finish its current operation.'); }
+    try { await post('/api/stop'); if (currentState?.job?.state === 'stopping') stoppingSince ??= Date.now(); }
     catch (error) { toast(error.message, true); updateControls(); }
   });
   $('forceStopButton').addEventListener('click', async () => {
     forcedStop = true; updateControls();
-    try { await post('/api/stop', { force: true }); toast('Force stop requested. Unfinished work is discarded; only completed exports are kept.'); }
+    try { await post('/api/stop', { force: true }); toast('Routing stopped. Any checked result is kept.'); }
     catch (error) { forcedStop = false; toast(error.message, true); updateControls(); }
   });
-  $('forceStopButton').title = 'Immediately stop the engine. Unfinished work is discarded; only completed exports are kept.';
+  $('forceStopButton').title = 'Immediately stop the engine and keep any checked result.';
   for (const [id, type] of [['downloadSes', 'ses'], ['downloadDsn', 'dsn'], ['downloadChecks', 'report'], ['downloadLog', 'log']]) $(id).addEventListener('click', () => void download(type));
   $('copyLog').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(lastLogs); toast('Engine log copied.'); }
@@ -666,7 +811,9 @@
   $('closeAboutBottom').addEventListener('click', () => $('aboutDialog').close());
   $('aboutDialog').addEventListener('click', event => { if (event.target === $('aboutDialog')) { const rect = event.target.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) event.target.close(); } });
   $('fitButton').addEventListener('click', fitBoard);
-  $('showPlacementAdvice').addEventListener('click', () => $('placementAdvice').scrollIntoView({ block: 'start' }));
+  $('showPlacementAdvice').addEventListener('click', () => { acknowledgeAttention(`advice:${currentState?.job?.id}`); $('placementAdvice').scrollIntoView({ block: 'start' }); });
+  $('placementAdvice').addEventListener('click', () => acknowledgeAttention(`advice:${currentState?.job?.id}`));
+  $('remainingRoutes').addEventListener('click', () => acknowledgeAttention(`remaining:${currentState?.job?.id}`));
   $('clearAdviceFocus').addEventListener('click', clearAdviceFocus);
   $('zoomIn').addEventListener('click', () => zoomBy(1.25));
   $('zoomOut').addEventListener('click', () => zoomBy(.8));
