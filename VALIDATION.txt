@@ -1,0 +1,82 @@
+RAMENROUTER 0.2.0 - VALIDATION AND ENGINE SCOPE
+
+This folder is the complete runnable application and its source. The router,
+parser, geometry checks, fanout and optimizer are JavaScript. The HTML starts
+a Blob Web Worker directly; there is no Java runtime, native executable,
+local HTTP server, package install, account or external routing service.
+
+ROUTING
+The default combines geometric SMD fanout, eight-direction A* routing,
+multilayer via placement, deterministic routing orders, rip-up and repair,
+fresh attempts, and checked path refinement. The best checked board is kept.
+New copper keeps nominal net widths. Existing copper is preserved as an
+immutable routing baseline; imported errors remain visible.
+
+A thin clearance raster is paired with a more conservative fast-path raster.
+Moves near an obstacle are checked geometrically. Exact pad-axis escapes and
+geometrically detected dense pad rows avoid relying on the grid to escape
+fine-pitch SMD pads. Dense rows are detected from pad shapes and positions,
+not component names; this also handles exporters that flatten component groups.
+Fanout can leave widely spaced pads unchanged. Fanout only skips later routing
+and optimization so its actual escape copper can be inspected separately.
+
+The optimizer checks shortcuts against obstacles and checks connectivity after
+each accepted change. It preserves interior branch connections and fixed
+traces. Final full checks guard the result. The displayed Rule issues count
+includes clearance, shorts, via permissions, outline, keepout and other
+supported rule violations. The separate width count remains visible.
+
+SPECCTRA SUPPORT
+Supported: mm/mil/inch/um/cm units, signal layers, front/back placement and
+rotation, circle/rectangle/polygon/capsule pads, polygon outlines and cutouts,
+copper/via keepouts, imported fixed traces/vias, class widths and clearances,
+layer permissions and circular constant-diameter via definitions. Class
+clearance diagonals preserve the global cross-class separation; routing also
+honors the inherited board-outline clearance.
+
+Unsupported constraints are rejected explicitly, including planes/pours,
+curves/arcs/ellipses, pair-specific or named clearance matrices, per-layer
+width rules, length or differential-pair constraints, noncircular or varying
+via diameters, and ambiguous multiple classes. This engine is not a complete
+implementation of all Specctra or Freerouting features, or a push-and-shove
+PCB editor.
+
+The native DSN exporter preserves the original parsed rules and geometry and
+replaces wiring with the routed result. A selected via-in-pad override is
+exported explicitly. SES uses a higher safe integer resolution and rounds
+copper dimensions outward. The downloadable JSON check report includes the
+export precision and measured rounding; no trace is intentionally thinned to
+fit the export resolution. SES does not change the PCB editor's own rules.
+
+DEVELOPER CHECKS
+Tests use the same source factories as the browser. Node is only needed to
+run developer tests; it is not needed to open or use the application.
+
+  node tests/dsn.test.js
+  node tests/geometry.test.cjs
+  node tests/fanout.test.cjs
+  node tests/router.test.cjs
+  node tests/optimizer.test.cjs
+
+The tests cover parsed transforms and rule-preserving DSN exports, SES units,
+physical connectivity across layers, exact shape clearances, widths, via
+permissions, holes/keepouts, rotated fanout rows, cancellation, empty and
+single-layer/no-via boards, and safe optimization of branched routing.
+The shipped tests use original synthetic fixtures only.
+
+Browser test source and measured results are in tests/. The published browser
+suite contains ten generic checks: direct file launch, DSN input, dense SMD
+escape-only, full routing, SES/DSN/check-report downloads, DSN reload,
+single-layer/no-via routing, cooperative stop, force stop, and recovery.
+It uses an ordinary file:// URL, Blob workers and browser downloads with
+external networking disabled. These checks exercise the actual engine.
+
+The synthetic eight-connection demo routes completely, with zero reported
+supported-rule issues and zero below-nominal traces. The SES test independently
+compares exported copper records and dimensions against the routed board.
+This verifies export geometry; it is not a source-CAD import test.
+
+Native Windows desktop automation and CAD-side SES import/manufacturing DRC
+have not been performed here. Check the originating PCB editor after import.
+These tests do not establish universal route completion, performance or
+superiority over other routers.

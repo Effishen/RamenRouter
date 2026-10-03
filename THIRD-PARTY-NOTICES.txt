@@ -1,0 +1,41 @@
+RamenRouter - Offline Browser Edition
+Copyright (C) 2026 RamenRouter contributors
+SPDX-License-Identifier: GPL-3.0-or-later
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+The full license is included in LICENSE. The application source is supplied as
+ordinary HTML, CSS and JavaScript in this same distribution.
+
+Project background and attribution
+----------------------------------
+Freerouting: https://github.com/freerouting/freerouting
+Freerouting is distributed under GNU GPL version 3.
+
+The historical versions examined during this application's design were:
+  Freerouting v2.2.4
+  Commit 20f1a72e546b9b23c7ba5127086885cfacbdd4be
+
+  Freerouting v2.1.0
+  Commit 89512b982cbe8d00cccc1837823d9cdcd7c24c8a
+
+This browser edition uses a separately implemented JavaScript routing engine.
+Its grid-based search and fanout behavior must not be represented as the exact
+algorithms or output of either historical Freerouting version.
+
+The interface was adapted from the RamenRouter prototype developed for this
+project. The Java prototype is not part of this browser edition's distribution.
+
+No Java runtime, Freerouting JAR, TeaVM-generated engine, native executable,
+third-party JavaScript framework or remotely loaded runtime is included.
+Browser platform APIs provide file selection, downloads, drawing and workers.
+The URLs in this notice are references; the app does not fetch them at runtime.
+
+The GPL license text is copyright (C) 2007 Free Software Foundation, Inc. and
+is reproduced verbatim in LICENSE.
