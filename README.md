@@ -1,12 +1,13 @@
 # Preface
 
-I built this for a very specific reason: How small can I make a PCB, how much can I cram onto it, and how cheaply can I get it made?
-Extra layers cost money. Finer traces cost money. Smaller holes cost money.
-I didn’t want to solve a difficult layout by making the board more expensive to manufacture. I wanted the routing algorithm to work harder instead.
-That calls for some algorithmic gymnastics.
+I built this for a very specific reason.
 
-The goal isn’t the prettiest traces. It’s squeezing more onto a smaller, cheaper board—and finding a way to make it all connect.
-So, if you care more about making it fit than making it pretty, meet Ramen Router.
+How small can I make a PCB, how much can I cram onto it, and how cheaply can I get it made?
+
+Extra layers cost money. Finer traces cost money. Smaller holes cost money.
+So let's fix those parameters and do some algorithmic gymnastics.
+
+So, if you care more about making it fit AND work than making it pretty, meet Ramen Router.
 100% vibe-coded. Ready to eat.
 
 Runs in your browser. 100% online, 100% client-side processing.
