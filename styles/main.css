@@ -383,3 +383,16 @@ dialog p{font-size:16px;line-height:1.65}
 @keyframes action-attention{0%,100%{box-shadow:0 0 0 1px #a5d99920}50%{box-shadow:0 0 0 5px #a5d99945}}
 @media(prefers-reduced-motion:reduce){.attention-cue,.export-button.export-ready{animation:none!important;box-shadow:0 0 0 2px #a5d99940}}
 @media(max-width:650px){.stop-result-prompt p,.remaining-routes>p{font-size:15px}.remaining-routes-list{max-height:260px}}
+
+/* A deliberate fresh start, with clear counts and a safe default action. */
+.clear-routing-button{width:100%;margin-top:11px;padding:10px 12px;min-height:44px;border:1px solid #625247;border-radius:5px;background:#292923;color:#d9b999;font-size:15px;line-height:1.45;text-align:left}
+.clear-routing-button:hover:not(:disabled){border-color:#ba9978;background:#393028}
+.clear-routing-dialog{width:540px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);overflow:auto}
+.clear-routing-dialog h2{font-size:28px;line-height:1.3;margin:20px 0 12px}
+.clear-routing-dialog .clear-routing-filename{font:14px/1.6 var(--mono);color:#91bdb2;overflow-wrap:anywhere;margin:0 0 17px}
+.clear-routing-dialog strong{color:#e5e4d6}
+.clear-routing-dialog .clear-routing-fixed{border-left:2px solid #c79973;padding-left:12px;color:#e0bb99}
+.clear-routing-actions{display:flex;gap:12px;margin-top:24px}
+.clear-routing-actions button{flex:1;min-width:0;min-height:46px;padding:10px 12px;font-size:16px;line-height:1.4;border:1px solid #55716b;border-radius:5px;background:#243a34;color:#d4e6dd}
+.clear-routing-actions #confirmClearRouting{border-color:#bd9879;background:#5d3f30;color:#ffe3ca}
+@media(max-width:450px){.clear-routing-dialog{padding:21px}.clear-routing-dialog h2{font-size:25px}.clear-routing-actions{gap:8px}.clear-routing-actions button{font-size:15px;padding:10px 8px}}

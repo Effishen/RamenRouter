@@ -443,6 +443,18 @@ function createRamenDSN() {
     if (!Number.isFinite(v)) throw new Error('Cannot export non-finite geometry.');
     return String(clean(Number(v.toFixed(10))));
   }
+  function clearRoutingDsn(board) {
+    if (!board._ast) throw new Error('The original DSN syntax tree is required to clear routing safely.');
+    // Work from the imported design rather than a routed board. In particular,
+    // a previous run's via-in-pad override must not become a new input rule.
+    const ast = clone(board._ast), index = ast.findIndex(x=>tag(x)==='wiring');
+    if (index < 0) ast.push(['wiring']);
+    else {
+      ast[index] = ['wiring'];
+      for (let i=ast.length-1;i>index;i--) if(tag(ast[i])==='wiring') ast.splice(i,1);
+    }
+    return astWrite(ast)+'\n';
+  }
   function exportDsn(board, filename = board.filename || board.name || 'board.dsn') {
     if (!board._ast) throw new Error('The original DSN syntax tree is required for lossless rule export.');
     const ast = clone(board._ast), netNames = new Map(board.nets.map(net=>[net.id,net.name]));
@@ -548,10 +560,10 @@ function createRamenDSN() {
       if(node.length>2)network.push(node);
     }
     const sessionName=/\.dsn$/i.test(filename)?filename.replace(/\.dsn$/i,'.ses'):filename+'.ses';
-    const session=['session',sessionName,['base_design',filename],['placement',['resolution',board.units.name,String(resolution)]],['routes',['resolution',board.units.name,String(resolution)],['parser',['host_cad','RamenRouter JavaScript'],['host_version','0.2.4']],library,network]];
+    const session=['session',sessionName,['base_design',filename],['placement',['resolution',board.units.name,String(resolution)]],['routes',['resolution',board.units.name,String(resolution)],['parser',['host_cad','RamenRouter JavaScript'],['host_version','0.2.5']],library,network]];
     return astWrite(session)+'\n';
   }
-  return { parse, exportSes, exportDsn, exportSesReport };
+  return { parse, exportSes, exportDsn, exportSesReport, clearRoutingDsn };
 }
 if (typeof globalThis !== 'undefined') globalThis.createRamenDSN = createRamenDSN;
 if (typeof module !== 'undefined' && module.exports) module.exports = { createRamenDSN };

@@ -2,7 +2,7 @@
 
 (() => {
   const $ = id => document.getElementById(id);
-  const activeStates = new Set(['inspecting', 'starting', 'running', 'routing', 'fanout', 'optimizing', 'stopping', 'loading']);
+  const activeStates = new Set(['inspecting', 'clearing', 'starting', 'running', 'routing', 'fanout', 'optimizing', 'stopping', 'loading']);
   const terminalStates = new Set(['completed', 'stopped', 'timed_out', 'error', 'failed']);
   const palette = ['#df9676', '#73c7c2', '#c1ab69', '#a394d3', '#83b76e', '#be86a6', '#73a0d0', '#a5b4bf'];
   const nativeEngine = globalThis.RamenNative;
@@ -29,6 +29,7 @@
   let announcedExportJobId = null;
   let downloadedSesJobId = null;
   let remainingRenderKey = '';
+  let clearRoutingJobId = null;
   const acknowledgedAttention = new Set();
   let activeAttentionKey = null;
   const visibleLayers = new Map();
@@ -39,7 +40,7 @@
   let drawQueued = false;
 
   const icons = { ready: '○', completed: '✓', stopped: 'Ⅱ', timed_out: '◷', error: '!', failed: '!' };
-  const labels = { ready: 'Board ready', inspecting: 'Reading your board', starting: 'Starting engine', running: 'Routing in progress', routing: 'Routing in progress', fanout: 'Fanout in progress', optimizing: 'Refining routes', stopping: 'Stopping safely', completed: 'Job complete', stopped: 'Job stopped', timed_out: 'Time limit reached', error: 'Job needs attention', failed: 'Job needs attention', idle: 'Ready when you are' };
+  const labels = { ready: 'Board ready', inspecting: 'Reading your board', clearing: 'Clearing routing', starting: 'Starting engine', running: 'Routing in progress', routing: 'Routing in progress', fanout: 'Fanout in progress', optimizing: 'Refining routes', stopping: 'Stopping safely', completed: 'Job complete', stopped: 'Job stopped', timed_out: 'Time limit reached', error: 'Job needs attention', failed: 'Job needs attention', idle: 'Ready when you are' };
 
   function toast(message, error = false) {
     clearTimeout(toastTimer);
@@ -104,6 +105,12 @@
     $('forceStopButton').hidden = !stopping || !stoppingSince || Date.now() - stoppingSince < 5000;
     $('forceStopButton').disabled = !available || forcedStop;
     for (const id of ['dropzone', 'replaceButton', 'demoButton']) $(id).disabled = !available || active;
+    const routing = job?.routingSummary;
+    $('clearRoutingButton').hidden = !job || job.state === 'idle';
+    $('clearRoutingButton').disabled = !available || active || !routing || routing.traceCount + routing.viaCount === 0;
+    $('clearRoutingButton').title = routing && routing.traceCount + routing.viaCount === 0 ? 'There are no traces or routing vias to clear.' : 'Remove all traces and routing vias from the loaded board.';
+    $('confirmClearRouting').disabled = !available || active || job?.id !== clearRoutingJobId;
+    if ($('clearRoutingDialog').open && (job?.id !== clearRoutingJobId || active)) $('clearRoutingDialog').close();
     for (const control of $('settingsForm').elements) control.disabled = !available || active;
     if (available && !active) {
       const fanoutOnly = $('fanout').checked && $('fanoutOnly').checked;
@@ -117,11 +124,13 @@
     $('routingModeTag').textContent = fanoutOnlyMode ? 'FANOUT' : (smartMode ? 'SMART' : 'DIRECT');
     $('downloadSes').disabled = !connected || !outputAvailable('ses') || active;
     $('downloadDsn').disabled = !connected || !outputAvailable('dsn') || active;
+    $('downloadDsn').firstChild.textContent = job?.routingCleared && job.state === 'ready' ? 'Unrouted DSN ' : 'Routed DSN ';
     $('downloadChecks').disabled = !connected || !outputAvailable('report') || active;
     $('downloadLog').disabled = !connected || !job;
     $('copyLog').disabled = !lastLogs;
     $('runLabel').textContent = $('fanout').checked && $('fanoutOnly').checked ? 'Run SMD escape' : (job && terminalStates.has(job.state) ? 'Route again' : 'Start routing');
-    let hint = !job ? 'Load a board to begin.' : (active ? 'Routing in a local browser worker.' : 'Runs from the original input board.');
+    let hint = !job ? 'Load a board to begin.' : (active ? 'Routing in a local browser worker.' : (job.routingCleared ? 'Runs from the cleared input board.' : 'Runs from the original input board.'));
+    if (job?.state === 'clearing') hint = 'Removing routes and checking your board…';
     if (busy) hint = 'Preparing your board…';
     if (stopping) hint = forcedStop ? 'Force stop requested.' : 'Finishing the current operation…';
     if (!connected) hint = 'Waiting for the browser engine.';
@@ -178,7 +187,7 @@
     if (!show) return;
     const count = job.bestResult?.unrouted ?? job.stats?.unrouted;
     const remaining = Number.isFinite(count) ? `${number(count)} ${count === 1 ? 'connection remains' : 'connections remain'}.` : '';
-    let detail = available ? (job.bestResult.fromInput ? `The best checked result is still your original board. ${remaining}` : `The best checked result is saved. ${remaining}`) : 'Routing has stopped. No checked result was available yet. You can start a new run when ready.';
+    let detail = available ? (job.bestResult.fromInput ? `The best checked result is still your ${job.routingCleared ? 'cleared input board' : 'original board'}. ${remaining}` : `The best checked result is saved. ${remaining}`) : 'Routing has stopped. No checked result was available yet. You can start a new run when ready.';
     const issues = job.stats?.totalViolations ?? job.stats?.clearanceViolations;
     if (available && issues > 0) detail += ` ${number(issues)} ${issues === 1 ? 'rule issue needs' : 'rule issues need'} review.`;
     if (available) detail += ' View it to inspect any missing routes and available advice. Routing will stay stopped.';
@@ -202,7 +211,7 @@
     $('showPads').checked = true;
     for (const layer of board.layers || []) visibleLayers.set(layerKey(layer.id), true);
     updateLayers(); fitBoard(); updateControls();
-    $('canvasLabelText').textContent = job.bestResult.fromInput ? 'Original checked board · routing stopped' : 'Best checked result · routing stopped';
+    $('canvasLabelText').textContent = job.bestResult.fromInput ? (job.routingCleared ? 'Cleared input board · routing stopped' : 'Original checked board · routing stopped') : 'Best checked result · routing stopped';
     const target = !$('remainingRoutes').hidden ? $('remainingRoutes') : (!$('placementAdvice').hidden ? $('placementAdvice') : $('jobState'));
     target.scrollIntoView({ block: 'start' });
     if (window.innerWidth > 900) canvas.scrollIntoView({ block: 'nearest' });
@@ -431,13 +440,22 @@
 
   function applyState(state) {
     const firstState = currentState === null;
+    const previousJob = currentState?.job;
     currentState = state;
     if (state.appVersion) $('appVersion').textContent = state.appVersion;
     if (state.engineVersion) $('engineVersion').textContent = state.engineVersion;
     const job = state.job;
+    if (previousJob?.state === 'clearing' && job?.state !== 'clearing') {
+      if (job?.id === previousJob.id && job.state === 'ready' && job.routingCleared) {
+        $('showAirwires').checked = true;
+        $('showPads').checked = true;
+        toast('Routing cleared. Review the missing connections, then choose Start routing.');
+      } else if (job?.clearError) toast(`Routing could not be cleared. Your previous board and results are kept. ${job.clearError}`, true);
+      else toast('Clearing cancelled. Your previous board and results are kept.');
+    }
     const hasJob = Boolean(job && job.state !== 'idle');
     const active = isActive();
-    if (job?.settings && job.state !== 'ready' && job.state !== 'inspecting' && (firstState || job.id !== lastJobId)) {
+    if (job?.settings && job.state !== 'ready' && job.state !== 'inspecting' && job.state !== 'clearing' && previousJob?.state !== 'clearing' && (firstState || job.id !== lastJobId)) {
       for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad']) if (typeof job.settings[key] === 'boolean') $(key).checked = job.settings[key];
       for (const key of ['maxPasses', 'timeoutMinutes']) if (typeof job.settings[key] === 'number') $(key).value = job.settings[key];
     }
@@ -449,7 +467,7 @@
     if (hasJob) {
       $('fileName').textContent = job.name || 'Untitled board';
       $('fileName').title = job.name || 'Untitled board';
-      $('fileDetail').textContent = job.state === 'inspecting' ? 'Reading design…' : 'Original DSN loaded';
+      $('fileDetail').textContent = job.state === 'inspecting' ? 'Reading design…' : (job.state === 'clearing' ? 'Clearing routing…' : (job.routingCleared ? 'Cleared input DSN' : 'Original DSN loaded'));
       document.title = `${job.name || 'Board'} · RamenRouter`;
     }
     const completedWithRuleIssues = job?.state === 'completed' && (job.stats?.totalViolations ?? job.stats?.clearanceViolations ?? 0) > 0;
@@ -460,7 +478,7 @@
     $('elapsedValue').textContent = seconds(job?.elapsedSeconds);
     $('jobError').hidden = !job?.error;
     $('jobError').textContent = job?.error ? String(job.error) : '';
-    $('canvasLabelText').textContent = active ? 'Engine snapshot' : (job?.state === 'ready' ? 'Input board' : (job?.state === 'stopped' && job.bestResult?.available ? (job.bestResult.fromInput ? 'Original checked board · routing stopped' : 'Best checked result · routing stopped') : (hasJob ? 'Latest board snapshot' : '')));
+    $('canvasLabelText').textContent = active ? 'Engine snapshot' : (job?.state === 'ready' ? (job.routingCleared ? 'Cleared input board' : 'Input board') : (job?.state === 'stopped' && job.bestResult?.available ? (job.bestResult.fromInput ? (job.routingCleared ? 'Cleared input board · routing stopped' : 'Original checked board · routing stopped') : 'Best checked result · routing stopped') : (hasJob ? 'Latest board snapshot' : '')));
     applyStats(job);
     updatePhases(job);
     const logs = Array.isArray(job?.log) ? job.log.map(line => typeof line === 'string' ? line : JSON.stringify(line)) : [];
@@ -736,6 +754,31 @@
     } catch {}
   }
 
+  function openClearRouting() {
+    const job = currentState?.job, routing = job?.routingSummary;
+    if (!connected || busy || isActive() || !routing || routing.traceCount + routing.viaCount === 0) return;
+    clearRoutingJobId = job.id;
+    $('clearRoutingFileName').textContent = job.name || 'Untitled board';
+    const count = (value, singular, plural) => `${number(value)} ${value === 1 ? singular : plural}`;
+    $('clearRoutingCounts').textContent = `all ${count(routing.traceCount, 'trace', 'traces')} and ${count(routing.viaCount, 'routing via', 'routing vias')}`;
+    const fixedCount = (routing.fixedTraceCount || 0) + (routing.fixedViaCount || 0);
+    $('clearRoutingFixed').hidden = fixedCount === 0;
+    $('clearRoutingFixed').textContent = fixedCount ? `This includes ${count(routing.fixedTraceCount || 0, 'fixed or protected trace', 'fixed or protected traces')} and ${count(routing.fixedViaCount || 0, 'fixed or protected routing via', 'fixed or protected routing vias')}. They will be removed too.` : '';
+    $('clearRoutingDialog').showModal();
+    updateControls();
+    $('cancelClearRouting').focus();
+  }
+
+  async function confirmClearRouting() {
+    const jobId = clearRoutingJobId;
+    if (!jobId || !connected || busy || isActive() || currentState?.job?.id !== jobId) return;
+    $('clearRoutingDialog').close();
+    busy = true; updateControls();
+    try { await post('/api/clear-routing', { jobId }); }
+    catch (error) { toast(error.message, true); }
+    finally { busy = false; updateControls(); }
+  }
+
   async function upload(file) {
     if (!file || busy || isActive() || !connected) return;
     if (!/\.dsn$/i.test(file.name)) { toast('Choose a Specctra .dsn file exported from your PCB editor.', true); return; }
@@ -760,6 +803,11 @@
 
   $('dropzone').addEventListener('click', () => { acknowledgeAttention(); $('fileInput').click(); });
   $('replaceButton').addEventListener('click', () => $('fileInput').click());
+  $('clearRoutingButton').addEventListener('click', openClearRouting);
+  $('confirmClearRouting').addEventListener('click', () => void confirmClearRouting());
+  $('cancelClearRouting').addEventListener('click', () => $('clearRoutingDialog').close());
+  $('closeClearRouting').addEventListener('click', () => $('clearRoutingDialog').close());
+  $('clearRoutingDialog').addEventListener('close', () => { clearRoutingJobId = null; });
   $('fileInput').addEventListener('change', event => void upload(event.target.files[0]));
   for (const eventName of ['dragenter', 'dragover']) document.addEventListener(eventName, event => {
     event.preventDefault(); if (connected && !isActive() && !busy) $('dropzone').classList.add('drag-over');
@@ -831,7 +879,7 @@
   canvas.addEventListener('pointerleave', () => { $('cursorPosition').textContent = 'Drag to pan · scroll to zoom'; });
   canvas.addEventListener('dblclick', fitBoard);
   document.addEventListener('keydown', event => {
-    if (event.target.matches('input,textarea,select') || $('aboutDialog').open || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (event.target.matches('input,textarea,select') || $('aboutDialog').open || $('clearRoutingDialog').open || event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.key.toLowerCase() === 'f') { event.preventDefault(); fitBoard(); }
   });
   restoreSettings();

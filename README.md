@@ -41,6 +41,13 @@ Use the board preview to zoom, pan and show or hide layers. The job overview
 shows progress and any connections still waiting to be routed. You can stop a
 job, adjust the settings and try again.
 
+Already have a partly or fully routed DSN? Choose **Clear routing & start over**
+below the loaded filename. After you confirm, RamenRouter removes all traces
+and routing vias, including any fixed or protected ones. Components, pads,
+connections and board rules stay in place, and your original file is unchanged.
+Review the cleared board, then click **Start routing** when you are ready.
+Download any result you want to keep before clearing it.
+
 With **Smart search** enabled, RamenRouter makes a final focused attempt when
 only a few connections remain. It keeps the best checked result throughout.
 

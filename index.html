@@ -25,7 +25,7 @@
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M5 20h30c-1 10-7 15-15 15S6 30 5 20Zm6 15h18M10 7v5h8v8m9-16v8h-4v8M4 15h13M25 15h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="5" r="2" fill="currentColor"/><circle cx="27" cy="3" r="2" fill="currentColor"/></svg>
       <span>Ramen<span class="brand-light">Router</span><span class="brand-caption">PCB ROUTING WORKBENCH</span></span>
     </div>
-    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.4</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
+    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.5</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
     <div class="connection" id="connection"><span class="status-dot"></span><span id="connectionText">Starting browser engine</span></div>
     <button class="icon-button help-button" id="helpButton" title="About this workbench" aria-label="About this workbench">?</button>
   </header>
@@ -44,6 +44,7 @@
         <span class="format-tag">SPECCTRA DESIGN FILE</span>
       </button>
       <div id="fileCard" class="file-card" hidden><div class="file-symbol">DSN</div><div class="file-copy"><strong id="fileName"></strong><span id="fileDetail">Board loaded</span></div><button class="icon-button" id="replaceButton" title="Choose another board" aria-label="Choose another board">↻</button></div>
+      <button class="clear-routing-button" id="clearRoutingButton" type="button" hidden disabled>Clear routing &amp; start over</button>
       <button class="text-button demo-button" id="demoButton">Try the included example <span aria-hidden="true">↗</span></button>
 
       <div class="section-rule"></div>
@@ -129,11 +130,21 @@
       <button id="downloadSes" class="export-button" disabled><span class="export-file-type">SES</span><span><strong>Routing session</strong><small>Import into your PCB editor</small></span><span class="download-arrow" aria-hidden="true">↓</span></button>
       <div class="secondary-downloads"><button id="downloadDsn" class="text-button" disabled>Routed DSN <span aria-hidden="true">↓</span></button><button id="downloadChecks" class="text-button" disabled>Check report <span aria-hidden="true">↓</span></button><button id="downloadLog" class="text-button" disabled>Engine log <span aria-hidden="true">↓</span></button></div>
       <p class="export-note">Check clearances, connectivity and design rules in your PCB editor before manufacturing.</p>
-      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.4</span><span>Independent browser engine · GPL-3.0</span></div>
+      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.5</span><span>Independent browser engine · GPL-3.0</span></div>
       </div>
     </aside>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="clearRoutingDialog" class="clear-routing-dialog" aria-labelledby="clearRoutingTitle" aria-describedby="clearRoutingDescription clearRoutingFixed clearRoutingPreserved">
+    <div class="dialog-header"><span class="section-kicker">START FRESH</span><button id="closeClearRouting" class="icon-button" type="button" aria-label="Cancel clearing routing">×</button></div>
+    <h2 id="clearRoutingTitle">Clear routing &amp; start over?</h2>
+    <p class="clear-routing-filename" id="clearRoutingFileName"></p>
+    <p id="clearRoutingDescription">Remove <strong id="clearRoutingCounts"></strong> from the loaded board.</p>
+    <p class="clear-routing-fixed" id="clearRoutingFixed" hidden></p>
+    <p id="clearRoutingPreserved">Components, pads, connections, board outline and design rules stay in place. Your original DSN file on disk is unchanged.</p>
+    <p>Download any result you want to keep first. Routing will stay stopped until you choose <strong>Start routing</strong>.</p>
+    <div class="clear-routing-actions"><button id="cancelClearRouting" type="button" autofocus>Cancel</button><button id="confirmClearRouting" type="button">Clear all routing</button></div>
+  </dialog>
   <dialog id="aboutDialog"><div class="dialog-header"><span class="section-kicker">ABOUT RAMENROUTER</span><button id="closeAbout" class="icon-button" aria-label="Close about dialog">×</button></div><h2>Open a file.<br>Find a route.</h2><p>RamenRouter is a standalone PCB routing workbench with an independent JavaScript engine. It searches for routes in a browser worker and enforces imported net widths.</p><p>This is a routing and inspection tool. Export a Specctra DSN from your PCB editor, route it here, then import the SES result back into your editor.</p><div class="about-callout"><strong>Everything runs locally.</strong><p>Open index.html to begin. Your files, routing calculations and exports stay in the browser. No server, Java runtime, installer or internet connection is needed.</p></div><p class="about-small">Independent GPL-3.0 source and notices are included in this folder. The preview simplifies some board geometry; check exported results in your PCB editor before manufacturing.</p><button id="closeAboutBottom" class="primary-button">Back to the board</button></dialog>
 </body>
 </html>
