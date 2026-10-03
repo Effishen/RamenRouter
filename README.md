@@ -7,6 +7,9 @@ So this is not your typical routing software.
 If you don't care how it routes, here is Ramen Router.
 100% vibe-coded, ready to eat.
 
+100% online, yet 100% offline. 
+Nothing to install, just click, upload your DSN and get a SES back.
+
 [Open RamenRouter](https://effishen.github.io/RamenRouter/)
 
 ## Get started
