@@ -82,6 +82,7 @@
     </section>
 
     <aside class="inspector">
+      <div class="inspector-scroll">
       <div class="section-kicker"><span class="section-number">03</span> JOB OVERVIEW</div>
       <div class="job-state" id="jobState"><span class="job-state-icon" id="jobStateIcon">○</span><div><h2 id="stateTitle">Ready when you are</h2><p id="phaseLabel">No active job</p></div></div>
       <div class="elapsed-row"><span>Elapsed time</span><strong id="elapsedValue">—</strong></div>
@@ -90,16 +91,25 @@
       <div class="stats-grid" id="statsGrid"><div class="stat-card"><span>Unrouted</span><strong id="unroutedValue">—</strong><small id="unroutedChange">No board loaded</small></div><div class="stat-card"><span>Vias</span><strong id="viasValue">—</strong><small id="viasChange">No board loaded</small></div><div class="stat-card"><span>Trace length · mm</span><strong id="tracesValue">—</strong><small id="tracesChange">No board loaded</small></div><div class="stat-card"><span>Rule issues</span><strong id="connectionsValue">—</strong><small id="connectionsChange">Final check pending</small></div></div>
       <div class="width-check"><span>Below net width</span><strong id="widthValue">—</strong><small id="widthDetail">Check pending</small></div>
       <div class="job-error" id="jobError" hidden></div>
+      <section class="via-suggestion" id="viaSuggestion" aria-labelledby="viaSuggestionTitle" aria-live="polite" hidden>
+        <h3 id="viaSuggestionTitle">Try vias in SMD pads?</h3>
+        <p id="viaSuggestionDetail"></p>
+        <p>This changes your board’s via-placement rule. Only enable it if your board can be made with vias in these pads.</p>
+        <p class="suggestion-note">A retry replaces this result. Download it first if you want to keep it.</p>
+        <div class="suggestion-actions"><button class="primary-button" id="enableViaRetry" type="button">Enable and reroute</button><button class="text-button" id="dismissViaSuggestion" type="button">Keep current rules</button></div>
+      </section>
       <div class="section-rule"></div>
       <div class="section-kicker">VISIBLE LAYERS <span id="layerCount" class="muted-count">0</span></div>
       <div id="layersList" class="layers-list"><p class="muted-empty">Board layers appear after import.</p></div>
       <div class="view-options"><label class="checkbox-row view-option"><input type="checkbox" id="showPads" checked><span>Pads & vias</span></label><label class="checkbox-row view-option"><input type="checkbox" id="showAirwires" checked><span>Airwires</span></label></div>
-      <div class="section-rule"></div>
+      </div>
+      <div class="export-controls">
       <div class="section-kicker">EXPORT RESULTS</div>
       <button id="downloadSes" class="export-button" disabled><span class="export-file-type">SES</span><span><strong>Routing session</strong><small>Import into your PCB editor</small></span><span class="download-arrow" aria-hidden="true">↓</span></button>
       <div class="secondary-downloads"><button id="downloadDsn" class="text-button" disabled>Routed DSN <span aria-hidden="true">↓</span></button><button id="downloadChecks" class="text-button" disabled>Check report <span aria-hidden="true">↓</span></button><button id="downloadLog" class="text-button" disabled>Engine log <span aria-hidden="true">↓</span></button></div>
       <p class="export-note">Check clearances, connectivity and design rules in your PCB editor before manufacturing.</p>
-      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.0</span><span>Independent browser engine · GPL-3.0</span></div>
+      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.1</span><span>Independent browser engine · GPL-3.0</span></div>
+      </div>
     </aside>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>

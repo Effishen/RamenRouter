@@ -18,7 +18,7 @@ computer, and you can download the app for offline use.
 
 ## Use it offline
 
-Download **RamenRouter-0.2.0.zip** from the
+Download **RamenRouter-0.2.1.zip** from the
 [latest release](https://github.com/Effishen/RamenRouter/releases/latest), extract
 the whole folder, and double-click **index.html**. Keep all the supplied files
 together in that folder. No internet connection is needed for the downloaded app.
@@ -33,6 +33,11 @@ before exporting the .dsn file.
 Use the board preview to zoom, pan and show or hide layers. The job overview
 shows progress and any connections still waiting to be routed. You can stop a
 job, adjust the settings and try again.
+
+If connections remain and vias in surface-mount pads could help, RamenRouter
+offers **Enable and reroute**. This changes a board rule, so use it only if
+your board can be manufactured with vias in those pads. You can also choose
+**Keep current rules** and keep your existing result.
 
 Alongside the .ses session, you can download a routed .dsn, a check report and
 the job log.

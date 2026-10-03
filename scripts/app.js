@@ -18,6 +18,8 @@
   let toastTimer;
   let stoppingSince = null;
   let forcedStop = false;
+  let dismissedSuggestionJobId = null;
+  let announcedSuggestionJobId = null;
   const visibleLayers = new Map();
   let layerColors = new Map();
   const canvas = $('boardCanvas');
@@ -113,6 +115,28 @@
     if (stopping) hint = forcedStop ? 'Force stop requested.' : 'Finishing the current operation…';
     if (!connected) hint = 'Waiting for the browser engine.';
     $('runHint').textContent = hint;
+    updateViaSuggestion();
+  }
+
+  function canSuggestViaInPad() {
+    const job = currentState?.job;
+    return Boolean(job?.state === 'completed' && job.hasOutput && job.stats?.unrouted > 0 &&
+      job.suggestions?.viaInPad && !job.settings?.viaInPad && !job.settings?.fanoutOnly &&
+      !($('fanout').checked && $('fanoutOnly').checked) && job.id !== dismissedSuggestionJobId);
+  }
+
+  function updateViaSuggestion() {
+    const show = canSuggestViaInPad();
+    $('viaSuggestion').hidden = !show;
+    $('enableViaRetry').disabled = !show || busy || !connected || isActive();
+    $('dismissViaSuggestion').disabled = busy;
+    if (!show) return;
+    const job = currentState.job, count = job.stats.unrouted;
+    $('viaSuggestionDetail').textContent = `${number(count)} ${count === 1 ? 'connection remains' : 'connections remain'}. Vias in surface-mount pads may offer another path.`;
+    if (announcedSuggestionJobId !== job.id) {
+      announcedSuggestionJobId = job.id;
+      requestAnimationFrame(() => { if (!$('viaSuggestion').hidden) $('viaSuggestion').scrollIntoView({ block: 'nearest' }); });
+    }
   }
 
   function stat(id, value, initial, unit = '') {
@@ -184,7 +208,7 @@
       $('fileDetail').textContent = job.state === 'inspecting' ? 'Reading design…' : 'Original DSN loaded';
       document.title = `${job.name || 'Board'} · RamenRouter`;
     }
-    $('stateTitle').textContent = labels[job?.state] || (job?.state ? job.state : 'Ready when you are');
+    $('stateTitle').textContent = job?.state === 'completed' && job.stats?.unrouted > 0 ? 'Connections remain' : (labels[job?.state] || (job?.state ? job.state : 'Ready when you are'));
     $('phaseLabel').textContent = phaseName(job?.phase) || (hasJob ? 'Choose settings and start routing' : 'No active job');
     $('jobStateIcon').textContent = active ? '⤳' : (icons[job?.state] || '○');
     $('jobState').className = `job-state ${active ? 'running' : (job?.state === 'error' ? 'failed' : job?.state || '')}`;
@@ -408,6 +432,19 @@
   }
 
   function saveSettings() { try { localStorage.setItem('ramenrouter.browser.settings.v1', JSON.stringify(getSettings())); } catch {} }
+
+  async function startRouting(enableViaInPad = false) {
+    if (busy || isActive() || !connected || !$('settingsForm').reportValidity()) return;
+    if (enableViaInPad) {
+      if (!canSuggestViaInPad()) return;
+      $('viaInPad').checked = true;
+      document.querySelector('.advanced-rules').open = true;
+    }
+    busy = true; updateControls();
+    try { saveSettings(); await post('/api/run', getSettings()); }
+    catch (error) { toast(error.message, true); }
+    finally { busy = false; updateControls(); }
+  }
   function restoreSettings() {
     try {
       const settings = JSON.parse(localStorage.getItem('ramenrouter.browser.settings.v1') || '{}');
@@ -455,12 +492,11 @@
   });
   $('settingsForm').addEventListener('submit', event => event.preventDefault());
   $('settingsForm').addEventListener('change', () => { saveSettings(); updateControls(); });
-  $('runButton').addEventListener('click', async () => {
-    if (!$('settingsForm').reportValidity() || busy || isActive()) return;
-    busy = true; updateControls();
-    try { saveSettings(); await post('/api/run', getSettings()); }
-    catch (error) { toast(error.message, true); }
-    finally { busy = false; updateControls(); }
+  $('runButton').addEventListener('click', () => void startRouting());
+  $('enableViaRetry').addEventListener('click', () => void startRouting(true));
+  $('dismissViaSuggestion').addEventListener('click', () => {
+    dismissedSuggestionJobId = currentState?.job?.id;
+    updateControls();
   });
   $('stopButton').addEventListener('click', async () => {
     $('stopButton').disabled = true;
