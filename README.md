@@ -41,6 +41,12 @@ Use the board preview to zoom, pan and show or hide layers. The job overview
 shows progress and any connections still waiting to be routed. You can stop a
 job, adjust the settings and try again.
 
+The job overview shows the current **Attempt #**, **Time left**, and the
+**Refinement** and **Finishing repairs** rounds. Remaining rounds are limits;
+the job can finish earlier. Time left is the remaining job budget, not a
+prediction of when routing will finish. The counts and timer freeze when you
+stop, so you can review how far the job got.
+
 During routing, the activity line and job log show what the engine is working
 on, including grid preparation, fanout, path searches and result checks. The
 last-update time tells you when the engine most recently reported progress.

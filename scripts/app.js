@@ -42,6 +42,7 @@
   let activityEventKey = '';
   let spatialActivity = null;
   let activitySnapshot = null;
+  let progressClock = null;
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const canvas = $('boardCanvas');
   const ctx = canvas.getContext('2d');
@@ -458,8 +459,9 @@
       if ((i === 1 && !settings.fanout) || (i === 3 && !settings.optimize) || ((i === 2 || i === 3) && settings.fanoutOnly)) node.className = 'skipped';
     }
     $('phaseCaption').textContent = job ? (phaseName(job.phase) || labels[job.state] || job.state) : 'Waiting for a board';
-    const pass = job?.pass ?? job?.stats?.pass;
-    $('passLabel').textContent = pass ? `ATTEMPT ${pass}` : '';
+    // Attempt numbers come from the dedicated counters, never a pass limit
+    // attached to a later checkpoint.
+    $('passLabel').textContent = '';
   }
 
   function activityJob() {
@@ -467,7 +469,72 @@
     return job && activitySnapshot?.jobId === job.id ? { ...job, ...activitySnapshot } : job;
   }
 
+  function progressText(id, value) {
+    if ($(id).textContent !== value) $(id).textContent = value;
+  }
+
+  function counterDisplay(counter, job, attempt = false) {
+    const current = Math.max(0, Math.floor(Number(counter?.current) || 0));
+    const completed = Math.max(0, Math.floor(Number(counter?.completed) || 0));
+    const limit = Number.isFinite(counter?.limit) ? Math.max(0, Math.floor(counter.limit)) : null;
+    const status = counter?.status || 'pending';
+    const noun = attempt ? 'attempt' : 'round';
+    if (status === 'skipped') return { value: 'Skipped', detail: 'Not used for this run', status };
+    if (status === 'done') return { value: String(completed), detail: `${noun}${completed === 1 ? '' : 's'} completed · 0 left`, status };
+    const interrupted = terminalStates.has(job.state) || Number.isFinite(job.endedAt);
+    const notStarted = limit === null ? null : Math.max(0, limit - Math.max(current, completed));
+    if (interrupted) return {
+      value: current ? `${current}${limit === null ? '' : ' / ' + limit}` : 'Not started',
+      detail: `${number(completed)} completed${notStarted === null ? '' : ' · ' + number(notStarted) + ' not started'}`,
+      status: 'interrupted'
+    };
+    if (status === 'pending' && completed > 0) return { value: String(completed), detail: `${noun}${completed === 1 ? '' : 's'} completed${notStarted === null ? '' : ' · up to ' + number(notStarted) + ' more if needed'}`, status };
+    if (!current) return { value: attempt ? 'Preparing' : 'Not started', detail: limit === null ? 'Waiting for engine counters' : `Up to ${number(limit)} ${noun}${limit === 1 ? '' : 's'} available`, status };
+    return { value: `${current}${limit === null ? '' : ' / ' + limit}`, detail: notStarted === null ? `${number(completed)} completed` : (notStarted === 0 ? `Last available ${noun}` : `Up to ${number(notStarted)} more after this`), status };
+  }
+
+  function stopProgressClock() {
+    if (progressClock !== null) clearTimeout(progressClock);
+    progressClock = null;
+  }
+
+  function updateRunProgress() {
+    const job = activityJob();
+    const show = job?.operation === 'run';
+    $('runProgress').hidden = !show;
+    if (!show) { stopProgressClock(); return; }
+    const ended = Number.isFinite(job.endedAt) || terminalStates.has(job.state);
+    const running = activeStates.has(job.state) && !ended;
+    for (const name of ['attempt', 'refinement', 'repair']) {
+      const display = counterDisplay(job.counters?.[name], job, name === 'attempt');
+      progressText(name + 'Value', display.value);
+      progressText(name + 'Detail', display.detail);
+      $(name + 'Progress').dataset.status = display.status;
+    }
+    let left = null;
+    if (running && Number.isFinite(job.deadlineAt)) left = Math.max(0, (job.deadlineAt - Date.now()) / 1000);
+    else if (Number.isFinite(job.remainingSeconds)) left = Math.max(0, job.remainingSeconds);
+    else if (Number.isFinite(job.deadlineAt) && Number.isFinite(job.endedAt)) left = Math.max(0, (job.deadlineAt - job.endedAt) / 1000);
+    progressText('timeLeftValue', left === null ? '—' : seconds(Math.ceil(left)));
+    progressText('timeLeftDetail', ended ? 'Unused time when the job ended' : (left === 0 ? 'Time limit reached · stopping' : 'Time limit · not a finish estimate'));
+    $('timeLeftProgress').classList.toggle('time-low', running && left !== null && left <= 60);
+    if (Number.isFinite(job.startedAt) && (!ended || Number.isFinite(job.endedAt))) progressText('elapsedValue', seconds(Math.max(0, ((ended ? job.endedAt : Date.now()) - job.startedAt) / 1000)));
+    const work = job.counters?.work;
+    let detail = '';
+    if (work && running) {
+      const labels = { traces: 'Traces reviewed', vias: 'Vias reviewed', checking: 'Checking geometry' };
+      detail = labels[work.kind] || '';
+      if (detail && Number.isFinite(work.total) && work.total > 0 && Number.isFinite(work.processed)) detail += ` · ${number(work.processed)} / ${number(work.total)}`;
+    }
+    progressText('roundWorkDetail', detail);
+    $('roundWorkDetail').hidden = !detail;
+    if (running && !document.hidden) {
+      if (progressClock === null) progressClock = setTimeout(() => { progressClock = null; updateRunProgress(); }, 1000);
+    } else stopProgressClock();
+  }
+
   function updateEngineActivity() {
+    updateRunProgress();
     const job = activityJob();
     const active = activeStates.has(job?.state);
     $('engineActivity').hidden = !active;
@@ -790,24 +857,29 @@
     if (!reducedMotion.matches && performance.now() - spatialActivity.receivedAt < 120) activityFrame = requestAnimationFrame(animateReportedPath);
   }
 
-  function strokeActivityPath(path, distance) {
+  function strokeActivityPath(path, distance, color) {
     if (!path.points.length) return;
     let remaining = Math.max(0, distance);
-    activityCtx.beginPath(); activityCtx.moveTo(...worldToScreen(...path.points[0]));
+    let tip = worldToScreen(...path.points[0]);
+    activityCtx.beginPath(); activityCtx.moveTo(...tip);
     for (let i = 0; i < path.lengths.length && remaining > 0; i++) {
       const fraction = path.lengths[i] ? Math.min(1, remaining / path.lengths[i]) : 1;
       const a = path.points[i], b = path.points[i + 1];
-      activityCtx.lineTo(...worldToScreen(a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction));
+      tip = worldToScreen(a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction);
+      activityCtx.lineTo(...tip);
       remaining -= path.lengths[i];
     }
-    activityCtx.stroke();
+    // Two strokes share the same path; no blur or full-board repaint is needed.
+    activityCtx.lineWidth = 6; activityCtx.strokeStyle = '#07131de6'; activityCtx.stroke();
+    activityCtx.lineWidth = 2.7; activityCtx.strokeStyle = color; activityCtx.stroke();
+    return tip;
   }
 
   function paintActivity() {
     activityCtx.clearRect(0, 0, view.width, view.height);
     if (!spatialActivityVisible()) return;
     const visual = spatialActivity;
-    const colors = { pad: '#9bf0d6', via: '#dfb0f4', grid: '#7fd0ed', search: '#f5cb87', candidate: '#ffbe7d', trace: '#a2efd0', check: '#ebdb97' };
+    const colors = { pad: '#9bf0d6', via: '#dfb0f4', grid: '#7fd0ed', search: '#7ee5f4', candidate: '#ffc47c', trace: '#a2efd0', check: '#ebdb97' };
     const color = colors[visual.kind];
     const fraction = reducedMotion.matches || !visual.animated ? 1 : Math.min(1, Math.max(0, (performance.now() - visual.receivedAt) / 120));
     activityCtx.save(); activityCtx.lineCap = 'round'; activityCtx.lineJoin = 'round'; activityCtx.strokeStyle = color; activityCtx.fillStyle = color; activityCtx.lineWidth = 2;
@@ -818,15 +890,22 @@
       activityCtx.globalAlpha = .85; activityCtx.strokeRect(x0, y0, x1 - x0, y1 - y0);
     }
     activityCtx.globalAlpha = .95;
-    if (visual.kind === 'candidate') activityCtx.setLineDash([6, 4]);
-    else if (visual.kind === 'search') activityCtx.setLineDash([3, 3]);
+    if (visual.kind === 'candidate') activityCtx.setLineDash([9, 3]);
+    const tips = [];
     for (const path of visual.paths) {
       if (!spatialLayerVisible(path.layer ?? visual.layer)) continue;
-      if (path.transition && fraction < .5) strokeActivityPath(path.transition.before, path.transition.sharedLength + (path.transition.before.length - path.transition.sharedLength) * (1 - fraction * 2));
-      else if (path.transition) strokeActivityPath(path, path.transition.sharedLength + (path.length - path.transition.sharedLength) * Math.max(0, (fraction - .5) * 2));
-      else strokeActivityPath(path, path.length * fraction);
+      let tip;
+      if (path.transition && fraction < .5) tip = strokeActivityPath(path.transition.before, path.transition.sharedLength + (path.transition.before.length - path.transition.sharedLength) * (1 - fraction * 2), color);
+      else if (path.transition) tip = strokeActivityPath(path, path.transition.sharedLength + (path.length - path.transition.sharedLength) * Math.max(0, (fraction - .5) * 2), color);
+      else tip = strokeActivityPath(path, path.length * fraction, color);
+      if (tip && visual.animated) tips.push(tip);
     }
     activityCtx.setLineDash([]);
+    for (const tip of tips) {
+      activityCtx.beginPath(); activityCtx.arc(tip[0], tip[1], 4, 0, Math.PI * 2);
+      activityCtx.fillStyle = '#f1ffff'; activityCtx.strokeStyle = '#173944'; activityCtx.lineWidth = 1.5; activityCtx.fill(); activityCtx.stroke();
+    }
+    activityCtx.fillStyle = color; activityCtx.strokeStyle = color; activityCtx.lineWidth = 2;
     for (const point of visual.points) {
       if (!spatialLayerVisible(point[2] ?? visual.layer)) continue;
       const [x, y] = worldToScreen(point[0], point[1]);
@@ -1247,9 +1326,9 @@
   $('showAirwires').addEventListener('change', draw);
   $('showLiveWork').addEventListener('change', syncActivityVisual);
   reducedMotion.addEventListener('change', syncActivityVisual);
-  document.addEventListener('visibilitychange', syncActivityVisual);
-  window.addEventListener('pagehide', stopActivityFrames);
-  window.addEventListener('pageshow', syncActivityVisual);
+  document.addEventListener('visibilitychange', () => { syncActivityVisual(); updateRunProgress(); });
+  window.addEventListener('pagehide', () => { stopActivityFrames(); stopProgressClock(); });
+  window.addEventListener('pageshow', () => { syncActivityVisual(); updateRunProgress(); });
   canvas.addEventListener('wheel', event => { if (!board) return; event.preventDefault(); const rect = canvas.getBoundingClientRect(); zoomBy(Math.exp(-event.deltaY * .0018), event.clientX - rect.left, event.clientY - rect.top); }, { passive: false });
   canvas.addEventListener('pointerdown', event => { if (!board || event.button !== 0) return; view.dragging = true; view.pointerX = event.clientX; view.pointerY = event.clientY; canvas.setPointerCapture(event.pointerId); canvas.classList.add('dragging'); });
   canvas.addEventListener('pointermove', event => {

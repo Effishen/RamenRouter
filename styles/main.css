@@ -461,3 +461,20 @@ dialog p{font-size:16px;line-height:1.65}
 .activity-panel.collapsed .engine-activity{display:none}
 @media(max-width:900px){.activity-panel.has-live-activity:not(.collapsed){height:250px}.engine-activity{padding:8px 12px}.connection-activity-label{left:52px;max-width:calc(100% - 64px);bottom:12px;font-size:12px}.connection-activity-label span{font-size:11px}}
 @media(prefers-reduced-motion:reduce){.job-state.running .job-state-icon,.spinner{animation:none}}
+
+/* Counters report actual work; the countdown is the user's time limit. */
+.run-progress{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:15px}
+.run-progress-card{min-width:0;padding:10px 11px;border:1px solid #3b5759;border-radius:6px;background:#172b2c}
+.run-progress-card>span{display:block;color:#b8d1cf;font-size:13px;line-height:1.4}
+.run-progress-card>strong{display:block;margin:8px 0 6px;font:24px/1.2 var(--mono);color:#dcf2e9;font-weight:500;overflow-wrap:anywhere}
+.run-progress-card>small{display:block;font-size:12px;line-height:1.5;color:#a9c4bf;overflow-wrap:anywhere}
+.run-progress-card[data-status="pending"]>strong,.run-progress-card[data-status="skipped"]>strong{font:16px/1.5 var(--sans);color:#b3c7c3}
+.run-progress-card[data-status="done"]{border-color:#46725f}
+.run-progress-card[data-status="interrupted"]{border-color:#766245}
+.run-round-card{background:#142326}
+.run-round-card>strong{font-size:20px}
+.run-progress-card.time-low{border-color:#a67c4d;background:#30281d}
+.run-progress-card.time-low>strong{color:#ffcf8b}
+.round-work-detail{grid-column:1/-1;margin:0;padding:6px 2px 0;font-size:13px;line-height:1.5;color:#b8d7cd;overflow-wrap:anywhere}
+.connection-activity-label[data-kind="search"]{border-color:#5c9aa7;color:#bcebf4;background:#12282feb}
+@media(max-width:1050px) and (min-width:901px){.run-progress-card{padding:9px}.run-progress-card>strong{font-size:22px}.run-round-card>strong{font-size:19px}}

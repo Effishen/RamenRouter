@@ -7,9 +7,9 @@
   let job = null, worker = null, workerUrl = null, inputText = null;
   let board = null, preview = null, exports = null, bestChecked = null, clearTransaction = null, ruleTransaction = null, importedNetLayers = null, serial = 0, timer = null, watchdog = null;
   const logs = [];
-  const base = {appVersion:'0.2.11',engineVersion:'Ramen JS 0.2.11',fanoutVersion:'Ramen SMD escape'};
+  const base = {appVersion:'0.2.12',engineVersion:'Ramen JS 0.2.12',fanoutVersion:'Ramen SMD escape'};
   function notifyActivity() {
-    const update={jobId:job?.id,state:job?.state,phase:job?.phase,activity:job?.activity,lastEngineUpdateAt:job?.lastEngineUpdateAt};
+    const update={jobId:job?.id,state:job?.state,phase:job?.phase,activity:job?.activity,lastEngineUpdateAt:job?.lastEngineUpdateAt,operation:job?.operation,counters:job?.counters,deadlineAt:job?.deadlineAt,remainingSeconds:remaining(),startedAt:job?.startedAt,endedAt:job?.endedAt};
     for(const fn of activitySubscribers){try{fn(update);}catch(_){}}
   }
   function notify() { notifyActivity(); for (const fn of subscribers) { try { fn(state()); } catch (_) {} } }
@@ -18,7 +18,8 @@
     if (logs.length > 20000) logs.splice(0,logs.length-20000);
   }
   function elapsed() { return job ? Math.max(0,((job.endedAt||Date.now())-job.startedAt)/1000) : 0; }
-  function state() { return {...base,job:job?{...job,elapsedSeconds:elapsed(),log:logs.slice(-180)}:null}; }
+  function remaining() { return job?.operation==='run'&&Number.isFinite(job.deadlineAt)?Math.max(0,(job.deadlineAt-(job.endedAt??Date.now()))/1000):null; }
+  function state() { return {...base,job:job?{...job,elapsedSeconds:elapsed(),remainingSeconds:remaining(),log:logs.slice(-180)}:null}; }
   function kill() {
     if(job?.activity)job.activity={...job.activity,visual:null,sequence:++activitySequence};
     if(worker) {worker.onmessage=null;worker.onerror=null;worker.terminate();} worker=null;
@@ -180,14 +181,14 @@
       const advice=placementAdvice(result,initialBoard,includeIncomplete);
       stage('exporting','Preparing the checked preview and downloadable results.',{},writeLog);
       return {board:result,preview:geometry(result,prepared?.connection),stats:finalStats,advice,fromInput,
-        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.11',settings:options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
+        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.12',settings:options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
     }
     self.onmessage=async event=>{
       const m=event.data;
       if(m.type==='stop') {cancelled=true;return;}
       if(!['inspect','run','clear','layer-rules'].includes(m.type)) return;
       try {
-        cancelled=false;deadline=Date.now()+(m.options?.timeoutMinutes||30)*60000;
+        cancelled=false;deadline=Number.isFinite(m.deadlineAt)?m.deadlineAt:Date.now()+(m.options?.timeoutMinutes||30)*60000;
         stage('reading','Reading the DSN board and its routing rules.');
         const b=dsn.parse(m.text,m.name);
         activityScale=b.units.mmPerUnit;activityNets=new Map(b.nets.map(net=>[net.id,net.name]));
@@ -228,9 +229,9 @@
           if(message.type==='activity'){send(message);return;}
           if(message.type==='checkpoint') {
             const fromInput=message.stats.traceCount===initial.traceCount&&message.stats.viaCount===initial.viaCount&&message.stats.unrouted===initial.unrouted;
-            send({type:'checkpoint',...checkedResult(message.board,b,m.options,m.name,initial,message.stats,fromInput),phase:message.phase,pass:message.pass});return;
+            send({type:'checkpoint',...checkedResult(message.board,b,m.options,m.name,initial,message.stats,fromInput),phase:message.phase,pass:message.pass,counters:message.counters});return;
           }
-          const data={type:'progress',phase:message.phase,pass:message.pass,message:message.message,activity:message.activity,log:message.log};
+          const data={type:'progress',phase:message.phase,pass:message.pass,message:message.message,activity:message.activity,log:message.log,counters:message.counters};
           if(message.board && Date.now()-lastPreview>1200) {
             const connection=geo.connectivity(message.board);
             lastPreview=Date.now();data.board=message.board;data.preview=geometry(message.board,connection);data.stats=message.stats||stats(message.board,false,connection);
@@ -239,9 +240,10 @@
         },()=>cancelled||Date.now()>=deadline);
         stage('checking','Routing search finished. Checking the retained result.');
         const result=out?.board||out||b,finalConnection=geo.connectivity(result),finalValidation=geo.validate(result),finalStats=stats(result,true,finalConnection,finalValidation);
+        const checked=checkedResult(result,b,m.options,m.name,initial,finalStats,false,!m.options.fanoutOnly,{connection:finalConnection,validation:finalValidation},true);
         const endState=Date.now()>=deadline?'timed_out':(cancelled||out?.stopped?'stopped':'completed');
         const suggestions=endState==='completed'&&finalStats.unrouted>0&&padViaCandidates.size&&finalConnection.components.some(component=>component.groups.length>1&&padViaCandidates.has(component.net))?{viaInPad:true}:{};
-        send({type:'done',state:endState,suggestions,...checkedResult(result,b,m.options,m.name,initial,finalStats,false,!m.options.fanoutOnly,{connection:finalConnection,validation:finalValidation},true),
+        send({type:'done',state:endState,suggestions,counters:out?.counters,...checked,
           message:finalStats.unrouted===0?(finalStats.totalViolations?'All connections routed, but '+finalStats.totalViolations+' rule issue(s) remain. Review them in your PCB editor.':'All connections routed. Verify the exported session in your PCB editor.'):finalStats.unrouted+' connections remain; best checked result retained.'});
       } catch(error) {send({type:'error',error:error.message||String(error),code:error.code,stack:error.stack||''});}
     };
@@ -256,6 +258,8 @@
     const id=++serial;
     const source='"use strict";\n'+[createRamenDSN,createRamenGeometry,createRamenOptimizer,createRamenFanout,createRamenRouter,createRamenAdvisor,workerMain].map(fn=>fn.toString()).join('\n')+'\nworkerMain();';
     job={id:String(id),name:job?.name||'board.dsn',state:clearing?'clearing':editingRules?'updating_rules':type==='inspect'?'inspecting':'starting',phase:clearing?'clearing':editingRules?'updating_rules':'loading',startedAt:Date.now(),settings:options,stats:transactional?saved.job.stats:null,initialStats:null,error:null,clearError:null,ruleError:null,hasOutput:false,routingCleared,layerRulesChanged,layerRuleSummary,routingSummary:transactional?routingSummary(board):null,suggestions:{},advice:{items:[]},bestResult:{available:false},revision:0,pass:0};
+    job.operation=type;job.counters=null;
+    job.deadlineAt=job.startedAt+(type==='run'?options.timeoutMinutes*60000:120000);
     job.lastEngineUpdateAt=null;
     job.activity={message:'Starting browser worker…',phase:job.phase,updatedAt:job.startedAt,source:'host',visual:null,sequence:++activitySequence};
     try {
@@ -270,6 +274,7 @@
       if(id!==serial||!job||!active.has(job.state))return;
       const m=e.data;
       job.lastEngineUpdateAt=Date.now();
+      if(m.counters){job.counters=m.counters;job.pass=m.counters.attempt?.current??job.pass;}
       if(m.type==='activity'||m.message)job.activity={...(m.activity||{}),visual:m.activity?.visual||null,message:String(m.message||m.activity?.visual?.label||'Working on the board'),phase:m.phase||job.phase,updatedAt:job.lastEngineUpdateAt,source:'engine',sequence:++activitySequence};
       // Spatial updates are small and independent of logs, statistics and board previews.
       if(m.type==='activity'){if(m.phase&&!transactional)job.phase=m.phase;notifyActivity();return;}
@@ -317,7 +322,7 @@
       if(m.preview) {preview=m.preview;job.revision++;}
       if(m.stats)job.stats={...job.stats,...m.stats};
       if(m.phase)job.phase=m.phase;
-      if(m.pass!==undefined)job.pass=m.pass;
+      if(m.pass!==undefined&&!job.counters)job.pass=m.pass;
       if(m.type==='loaded') {
         if(importedNetLayers===null)importedNetLayers=Object.fromEntries(netLayerSettings(board).nets.map(net=>[net.id,net.allowedLayers.slice()]));
         updateLayerRules();
@@ -340,9 +345,9 @@
       notify();
     };
     worker.onerror=e=>{if(id!==serial||!job||!active.has(job.state))return;const message=e.message||'Browser worker failed to start. Use a current Chrome, Edge or Firefox browser.';if(clearing){restoreBeforeClear('Routing could not be cleared: '+message,message);return;}if(editingRules){restoreBeforeRules('Layer rules could not be updated: '+message,message);return;}job.error=message;job.state='error';job.phase='error';job.endedAt=Date.now();log(job.error);kill();notify();};
-    try {worker.postMessage({type,text:inputText,name:job.name,options,changes});}
+    try {worker.postMessage({type,text:inputText,name:job.name,options,changes,deadlineAt:job.deadlineAt});}
     catch(error) {if(clearing)restoreBeforeClear('Routing could not be cleared: '+error.message,error.message);if(editingRules)restoreBeforeRules('Layer rules could not be updated: '+error.message,error.message);throw error;}
-    const timeLimit=type==='run'?options.timeoutMinutes*60000:120000;
+    const timeLimit=Math.max(0,job.deadlineAt-Date.now());
     timer=setTimeout(()=>{if(id===serial&&job&&active.has(job.state))stopWithBest('timed_out','Time budget reached.');},timeLimit);
     watchdog=setTimeout(()=>{if(id===serial&&job&&active.has(job.state))stopWithBest('timed_out','The worker exceeded its time budget and was terminated.');},timeLimit+30000);
     notify();return state();

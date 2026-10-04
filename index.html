@@ -25,7 +25,7 @@
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M5 20h30c-1 10-7 15-15 15S6 30 5 20Zm6 15h18M10 7v5h8v8m9-16v8h-4v8M4 15h13M25 15h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="5" r="2" fill="currentColor"/><circle cx="27" cy="3" r="2" fill="currentColor"/></svg>
       <span>Ramen<span class="brand-light">Router</span><span class="brand-caption">PCB ROUTING WORKBENCH</span></span>
     </div>
-    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.11</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
+    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.12</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
     <div class="connection" id="connection"><span class="status-dot"></span><span id="connectionText">Starting browser engine</span></div>
     <button class="icon-button help-button" id="helpButton" title="About this workbench" aria-label="About this workbench">?</button>
   </header>
@@ -101,6 +101,13 @@
         <div class="stop-result-actions"><button id="viewBestResult" type="button">View best result</button><button id="keepStopped" type="button">Keep stopped</button></div>
       </section>
       <div class="elapsed-row"><span>Elapsed time</span><strong id="elapsedValue">—</strong></div>
+      <section class="run-progress" id="runProgress" aria-label="Routing attempts and time budget" hidden>
+        <div class="run-progress-card" id="attemptProgress"><span>Attempt #</span><strong id="attemptValue">Preparing</strong><small id="attemptDetail">Waiting for engine counters</small></div>
+        <div class="run-progress-card" id="timeLeftProgress"><span>Time left</span><strong id="timeLeftValue">—</strong><small id="timeLeftDetail">Time limit · not a finish estimate</small></div>
+        <div class="run-progress-card run-round-card" id="refinementProgress"><span>Refinement</span><strong id="refinementValue">Not started</strong><small id="refinementDetail">Waiting for engine counters</small></div>
+        <div class="run-progress-card run-round-card" id="repairProgress"><span>Finishing repairs</span><strong id="repairValue">Not started</strong><small id="repairDetail">Waiting for engine counters</small></div>
+        <p class="round-work-detail" id="roundWorkDetail" hidden></p>
+      </section>
       <div class="phase-track" id="phaseTrack" aria-label="Routing stages"><span data-stage="input" title="Input"></span><span data-stage="fanout" title="Optional fanout"></span><span data-stage="route" title="Routing"></span><span data-stage="optimize" title="Optimization"></span><span data-stage="done" title="Complete"></span></div>
       <div class="phase-caption"><span id="phaseCaption">Waiting for a board</span><span id="passLabel"></span></div>
       <div class="stats-grid" id="statsGrid"><div class="stat-card"><span>Unrouted</span><strong id="unroutedValue">—</strong><small id="unroutedChange">No board loaded</small></div><div class="stat-card"><span>Vias</span><strong id="viasValue">—</strong><small id="viasChange">No board loaded</small></div><div class="stat-card"><span>Trace length · mm</span><strong id="tracesValue">—</strong><small id="tracesChange">No board loaded</small></div><div class="stat-card"><span>Rule issues</span><strong id="connectionsValue">—</strong><small id="connectionsChange">Final check pending</small></div></div>
@@ -136,7 +143,7 @@
       <button id="downloadSes" class="export-button" disabled><span class="export-file-type">SES</span><span><strong>Routing session</strong><small>Import into your PCB editor</small></span><span class="download-arrow" aria-hidden="true">↓</span></button>
       <div class="secondary-downloads"><button id="downloadDsn" class="text-button" disabled>Routed DSN <span aria-hidden="true">↓</span></button><button id="downloadChecks" class="text-button" disabled>Check report <span aria-hidden="true">↓</span></button><button id="downloadLog" class="text-button" disabled>Engine log <span aria-hidden="true">↓</span></button></div>
       <p class="export-note">Check clearances, connectivity and design rules in your PCB editor before manufacturing.</p>
-      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.11</span><span>Independent browser engine · GPL-3.0</span></div>
+      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.12</span><span>Independent browser engine · GPL-3.0</span></div>
       </div>
     </aside>
   </main>
