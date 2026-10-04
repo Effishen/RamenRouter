@@ -419,17 +419,20 @@ dialog p{font-size:16px;line-height:1.65}
 .net-layer-column{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;min-height:48px;cursor:pointer}
 .net-layer-table-scroll{max-height:42vh;min-height:130px;overflow:auto;border:1px solid #3a5159;border-radius:5px;scrollbar-color:#4c686d #13232b;scrollbar-width:thin}
 .net-layer-table-scroll:focus-visible{outline:2px solid var(--teal);outline-offset:3px}
-.net-layer-table{border-collapse:separate;border-spacing:0;width:100%;min-width:520px;font-size:15px;text-align:left}
+.net-layer-table{border-collapse:separate;border-spacing:0;width:100%;min-width:670px;font-size:15px;text-align:left}
 .net-layer-table th,.net-layer-table td{padding:11px 14px;border-bottom:1px solid #2b424a;line-height:1.4}
 .net-layer-table thead th{position:sticky;top:0;z-index:2;background:#243a40;color:#c9dedc;font-size:14px;font-weight:600;text-align:center;min-width:100px;max-width:180px;overflow-wrap:anywhere}
 .net-layer-table thead th:first-child{left:0;z-index:3;text-align:left;min-width:210px}
 .net-layer-table tbody th{position:sticky;left:0;z-index:1;min-width:210px;max-width:280px;background:#15252c;font-weight:500;color:#e0eae7;overflow-wrap:anywhere}
 .net-layer-table tbody td{background:#132128;text-align:center}
+.net-layer-table .net-short-column{min-width:150px;max-width:170px;border-right:1px solid #42605f}
+.net-layer-table thead .net-short-column{color:#b6ead5;background:#25413e}
+.net-layer-table tbody .net-short-column{background:#182d2b}
 .net-layer-table tbody tr:last-child>*{border-bottom:0}
 .net-layer-table input[type=checkbox]{width:22px;height:22px;margin:0;accent-color:var(--teal);cursor:pointer;vertical-align:middle}
 .net-layer-table input[type=checkbox]:disabled{cursor:not-allowed;opacity:.45}
 .net-layer-name{display:block}
-.net-layer-rule-status,.net-layer-row-warning{display:block;font-size:12px;font-weight:400;margin-top:4px;color:#97b4bc}
+.net-layer-rule-status,.net-layer-row-warning{display:block;font-size:13px;font-weight:400;margin-top:4px;color:#97b4bc}
 .net-layer-row-warning{color:#e5bb91}
 .net-layer-edited .net-layer-rule-status{color:#a1dfbf}
 .net-layer-invalid .net-layer-rule-status{color:#ffb8aa}

@@ -32,11 +32,16 @@ function createRamenOptimizer(geometry) {
     const originalLength=board.traces.reduce((s,t)=>s+length(t.points),0);
     const maxClearance=Math.max(board.defaultClearance||0,...board.nets.map(n=>n.clearance||0));
     let candidatesChecked=0,lastShortcutYield=Date.now(),processedTraces=0;const totalTraces=board.traces.length;work('traces',0,totalTraces,true);
-    for(let index=0;index<board.traces.length&&!isCancelled();index++){
+    // Review selected nets first without reordering the copper array: the
+    // router relies on its imported-copper prefix during finishing repairs.
+    const traceOrder=board.traces.map((_,index)=>index);
+    if(board.nets.some(n=>n.preferShort===true))traceOrder.sort((a,b)=>Number(nets.get(board.traces[b].net)?.preferShort===true)-Number(nets.get(board.traces[a].net)?.preferShort===true));
+    for(let ordinal=0;ordinal<traceOrder.length&&!isCancelled();ordinal++){
+      const index=traceOrder[ordinal];
       const trace=board.traces[index];
-      detail('Refining paths · '+(index+1)+'/'+board.traces.length+' · '+(nets.get(trace.net)?.name||'unnamed net'),{stage:'refinement-traces',processed:index+1,total:board.traces.length,netId:trace.net,netName:nets.get(trace.net)?.name});
+      detail('Refining paths · '+(ordinal+1)+'/'+board.traces.length+' · '+(nets.get(trace.net)?.name||'unnamed net'),{stage:'refinement-traces',processed:ordinal+1,total:board.traces.length,netId:trace.net,netName:nets.get(trace.net)?.name});
       spatial('Inspecting trace · '+(nets.get(trace.net)?.name||'unnamed net'),{stage:'refinement-trace',netId:trace.net,netName:nets.get(trace.net)?.name},()=>({kind:'trace',paths:[{layer:trace.layer,points:trace.points.slice(0,512).map(p=>p.slice(0,2))}],label:trace.points.length>512?'Current trace · first section':'Current trace for refinement'}));
-      if(index%6===0){await wait();if(isCancelled())break;}
+      if(ordinal%6===0){await wait();if(isCancelled())break;}
       if(trace.fixed||trace.points.length<3){processedTraces++;work('traces',processedTraces,totalTraces);continue;}
       const net=nets.get(trace.net),ownClear=net?.routingClearance??net?.clearance??0;
       const primitives=G.copper(board).primitives.filter(p=>p.layer===trace.layer&&p.net!==trace.net);
@@ -61,7 +66,7 @@ function createRamenOptimizer(geometry) {
         for(let j=previous.length-1;j>i+1;j--){
           const old=length(previous.slice(i,j+1));
           for(const candidate of shortcuts(previous[i],previous[j])){
-            if(++candidatesChecked%128===0){work('traces',processedTraces,totalTraces);detail('Trying shorter paths · '+(net?.name||'unnamed net')+' · trace '+(index+1)+'/'+board.traces.length+' · '+candidatesChecked+' shortcuts checked',{stage:'refinement-shortcuts',netId:trace.net,netName:net?.name,processed:index+1,total:board.traces.length,candidates:candidatesChecked});if(Date.now()-lastShortcutYield>=24){await wait();lastShortcutYield=Date.now();}if(isCancelled())break refineTrace;}
+            if(++candidatesChecked%128===0){work('traces',processedTraces,totalTraces);detail('Trying shorter paths · '+(net?.name||'unnamed net')+' · trace '+(ordinal+1)+'/'+board.traces.length+' · '+candidatesChecked+' shortcuts checked',{stage:'refinement-shortcuts',netId:trace.net,netName:net?.name,processed:ordinal+1,total:board.traces.length,candidates:candidatesChecked});if(Date.now()-lastShortcutYield>=24){await wait();lastShortcutYield=Date.now();}if(isCancelled())break refineTrace;}
             const candidateId=++visualCandidateId;spatial('Testing shortcut · '+(net?.name||'unnamed net'),{stage:'refinement-shortcut',netId:trace.net,netName:net?.name,candidateId},()=>({kind:'candidate',paths:[{layer:trace.layer,points:candidate.map(p=>p.slice(0,2))}],label:'Actual shortcut candidate · being checked'}));
             if(length(candidate)>=old-EPS)continue;
             if(candidate.slice(1).every((p,k)=>safe(candidate[k],p))){chosen=candidate;end=j;break;}

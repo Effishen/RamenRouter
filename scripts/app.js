@@ -32,6 +32,7 @@
   let clearRoutingJobId = null;
   let netLayersData = null;
   let netLayerDrafts = new Map();
+  let netShortDrafts = new Map();
   const acknowledgedAttention = new Set();
   let activeAttentionKey = null;
   const visibleLayers = new Map();
@@ -42,6 +43,9 @@
   let activityEventKey = '';
   let spatialActivity = null;
   let activitySnapshot = null;
+  const recentRouteActivity = new Map();
+  let recentRouteJobKey = '';
+  let lastActivityPaintAt = 0;
   let progressClock = null;
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const canvas = $('boardCanvas');
@@ -52,7 +56,7 @@
   let drawQueued = false;
 
   const icons = { ready: '○', completed: '✓', stopped: 'Ⅱ', timed_out: '◷', error: '!', failed: '!' };
-  const labels = { ready: 'Board ready', inspecting: 'Reading your board', clearing: 'Clearing routing', updating_rules: 'Updating net routing layers', starting: 'Starting engine', running: 'Routing in progress', routing: 'Routing in progress', fanout: 'Fanout in progress', optimizing: 'Refining routes', stopping: 'Stopping safely', completed: 'Job complete', stopped: 'Job stopped', timed_out: 'Time limit reached', error: 'Job needs attention', failed: 'Job needs attention', idle: 'Ready when you are' };
+  const labels = { ready: 'Board ready', inspecting: 'Reading your board', clearing: 'Clearing routing', updating_rules: 'Updating routing rules', starting: 'Starting engine', running: 'Routing in progress', routing: 'Routing in progress', fanout: 'Fanout in progress', optimizing: 'Refining routes', stopping: 'Stopping safely', completed: 'Job complete', stopped: 'Job stopped', timed_out: 'Time limit reached', error: 'Job needs attention', failed: 'Job needs attention', idle: 'Ready when you are' };
 
   function toast(message, error = false) {
     clearTimeout(toastTimer);
@@ -95,7 +99,7 @@
     return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
   }
 
-  function phaseName(phase) { return ({ reading: 'Reading board data', checking: 'Checking routing rules', advising: 'Preparing placement advice', exporting: 'Preparing exports', rasterizing: 'Preparing copper and clearance grid', loading: 'Loading board', routing: 'Routing connections', fanout: 'Preparing pad escapes', optimizing: 'Refining routes', deep_search: 'Smart search', pad_escape: 'Pad-via escape', finishing: 'Finishing remaining connections', updating_rules: 'Updating net routing layers' })[phase] || phase; }
+  function phaseName(phase) { return ({ reading: 'Reading board data', checking: 'Checking routing rules', advising: 'Preparing placement advice', exporting: 'Preparing exports', rasterizing: 'Preparing copper and clearance grid', loading: 'Loading board', routing: 'Routing connections', fanout: 'Preparing pad escapes', optimizing: 'Refining routes', deep_search: 'Smart search', pad_escape: 'Pad-via escape', finishing: 'Finishing remaining connections', updating_rules: 'Updating routing rules' })[phase] || phase; }
 
   function isActive() { return Boolean(currentState?.job && activeStates.has(currentState.job.state)); }
 
@@ -127,8 +131,8 @@
     $('netLayersSetting').hidden = !job || job.state === 'idle';
     $('netLayersButton').disabled = !available || active;
     if ($('netLayersDialog').open && (job?.id !== netLayersData?.jobId || active)) $('netLayersDialog').close();
-    const layerSummary = job?.layerRuleSummary;
-    $('netLayersSummary').textContent = layerSummary ? `${number(layerSummary.restrictedNets)} of ${number(layerSummary.totalNets)} nets limited to selected layers${job.layerRulesChanged ? ' · edited' : ''}.` : 'Choose which layers each net can use.';
+    const layerSummary = job?.routingRuleSummary || job?.layerRuleSummary;
+    $('netLayersSummary').textContent = layerSummary ? `${number(layerSummary.restrictedNets)} of ${number(layerSummary.totalNets)} nets limited to selected layers · ${number(layerSummary.shortRouteNets || 0)} prefer shorter routes${job.routingRulesChanged || job.layerRulesChanged ? ' · edited' : ''}.` : 'Choose layers and prioritize shorter routes for each net.';
     const layerConflicts = layerSummary?.conflictingTraces || 0;
     $('netLayerConflict').hidden = !layerConflicts || active;
     $('netLayerConflict').textContent = layerConflicts ? `${number(layerConflicts)} existing ${layerConflicts === 1 ? 'trace is' : 'traces are'} on excluded layers. Use “Clear routing & start over” to remove existing routes, or revise the net layer rules.` : '';
@@ -146,7 +150,7 @@
     $('routingModeTag').textContent = fanoutOnlyMode ? 'FANOUT' : (smartMode ? 'SMART' : 'DIRECT');
     $('downloadSes').disabled = !connected || !outputAvailable('ses') || active;
     $('downloadDsn').disabled = !connected || !outputAvailable('dsn') || active;
-    $('downloadDsn').firstChild.textContent = job?.state === 'ready' ? (job.routingCleared ? 'Unrouted DSN ' : (job.layerRulesChanged ? 'Board DSN ' : 'Routed DSN ')) : 'Routed DSN ';
+    $('downloadDsn').firstChild.textContent = job?.state === 'ready' ? (job.routingCleared ? 'Unrouted DSN ' : ((job.routingRulesChanged || job.layerRulesChanged) ? 'Board DSN ' : 'Routed DSN ')) : 'Routed DSN ';
     $('downloadChecks').disabled = !connected || !outputAvailable('report') || active;
     $('downloadLog').disabled = !connected || !job;
     $('copyLog').disabled = !lastLogs;
@@ -570,9 +574,9 @@
     if (previousJob?.state === 'updating_rules' && job?.state !== 'updating_rules') {
       if (job?.id === previousJob.id && job.state === 'ready') {
         $('showAirwires').checked = true;
-        toast('Net routing layers applied. Review your input board, then choose Start routing.');
-      } else if (job?.ruleError) toast(`Layer rules could not be applied. Your previous board and results are kept. ${job.ruleError}`, true);
-      else toast('Layer changes cancelled. Your previous board and results are kept.');
+        toast('Routing rules applied. Review your input board, then choose Start routing.');
+      } else if (job?.ruleError) toast(`Routing rules could not be applied. Your previous board and results are kept. ${job.ruleError}`, true);
+      else toast('Routing rule changes cancelled. Your previous board and results are kept.');
     }
     const hasJob = Boolean(job && job.state !== 'idle');
     const active = isActive();
@@ -588,7 +592,7 @@
     if (hasJob) {
       $('fileName').textContent = job.name || 'Untitled board';
       $('fileName').title = job.name || 'Untitled board';
-      $('fileDetail').textContent = job.state === 'inspecting' ? 'Reading design…' : (job.state === 'clearing' ? 'Clearing routing…' : (job.state === 'updating_rules' ? 'Updating net layers…' : (job.routingCleared ? 'Cleared input DSN' : (job.layerRulesChanged ? 'Input DSN · edited net layers' : 'Original DSN loaded'))));
+      $('fileDetail').textContent = job.state === 'inspecting' ? 'Reading design…' : (job.state === 'clearing' ? 'Clearing routing…' : (job.state === 'updating_rules' ? 'Updating routing rules…' : (job.routingCleared ? 'Cleared input DSN' : ((job.routingRulesChanged || job.layerRulesChanged) ? 'Input DSN · edited routing rules' : 'Original DSN loaded'))));
       document.title = `${job.name || 'Board'} · RamenRouter`;
     }
     const completedWithRuleIssues = job?.state === 'completed' && (job.stats?.totalViolations ?? job.stats?.clearanceViolations ?? 0) > 0;
@@ -771,16 +775,53 @@
     requestAnimationFrame(() => { drawQueued = false; paintBoard(); paintActivity(); });
   }
 
-  function activityPath(item) {
+  function activityPath(item, limit = 512) {
     if (!item || !Array.isArray(item.points)) return null;
-    const points = item.points.slice(0, 512);
+    const points = item.points.slice(0, limit);
     if (!points.every(point => Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1]))) return null;
     if (points.length < 2) return null;
     const lengths = points.slice(1).map((point, i) => Math.hypot(point[0] - points[i][0], point[1] - points[i][1]));
     return { layer: item.layer, points, lengths, length: lengths.reduce((sum, value) => sum + value, 0) };
   }
 
+  function routePreviewLimit(job = activityJob()) {
+    const netCount = job?.stats?.netCount ?? job?.initialStats?.netCount ?? 1;
+    return Math.max(1, Math.min(25, Math.ceil((Number.isFinite(netCount) ? netCount : 1) * .25)));
+  }
+
+  function recentRouteStage(job = activityJob()) {
+    return job?.operation === 'run' && ['routing', 'rasterizing', 'finishing', 'deep_search', 'pad_escape', 'fanout'].includes(job.phase);
+  }
+
+  function pruneRecentRoutes() {
+    const now = Date.now();
+    for (const [key, item] of recentRouteActivity) if (item.expiresAt <= now) recentRouteActivity.delete(key);
+    // Reserve 1,024 vertices for the current path and its previous branch.
+    // Evict whole, oldest net samples; never join unrelated path fragments.
+    let vertices = [...recentRouteActivity.values()].reduce((sum, item) => sum + item.vertexCount, 0);
+    while (recentRouteActivity.size > routePreviewLimit() || vertices > 7168) {
+      const key = recentRouteActivity.keys().next().value;
+      vertices -= recentRouteActivity.get(key).vertexCount;
+      recentRouteActivity.delete(key);
+    }
+  }
+
+  function recentRoutePreviews() {
+    if (!activityEnabled() || !board || !recentRouteStage()) return [];
+    pruneRecentRoutes();
+    const current = spatialActivityVisible() ? spatialActivity : null;
+    const reserved = current?.paths.length ? 1 : 0;
+    const available = routePreviewLimit() - reserved;
+    return available > 0 ? [...recentRouteActivity.values()].filter(item => item.netKey !== current?.netKey && item.paths.some(path => spatialLayerVisible(path.layer ?? item.layer))).slice(-available) : [];
+  }
+
   function receiveSpatialActivity(job) {
+    const jobKey = `${job?.id || ''}|${job?.startedAt || ''}|${job?.operation || ''}`;
+    if (jobKey !== recentRouteJobKey || !activeStates.has(job?.state) || job?.state === 'stopping' || job?.operation !== 'run') {
+      recentRouteActivity.clear();
+      if (jobKey !== recentRouteJobKey) { spatialActivity = null; activityEventKey = ''; }
+      recentRouteJobKey = jobKey;
+    }
     const report = job?.activity;
     const key = `${job?.id || ''}|${report?.sequence ?? report?.updatedAt ?? ''}`;
     if (key === activityEventKey) return;
@@ -789,14 +830,28 @@
     spatialActivity = null;
     const visual = report?.visual;
     if (!visual || !['pad', 'via', 'grid', 'search', 'candidate', 'trace', 'check'].includes(visual.kind)) return;
-    const paths = (Array.isArray(visual.paths) ? visual.paths : []).slice(0, 32).map(activityPath).filter(Boolean);
+    let remainingVertices = 512;
+    const paths = [];
+    for (const item of (Array.isArray(visual.paths) ? visual.paths : []).slice(0, 32)) {
+      if (remainingVertices < 2) break;
+      const path = activityPath(item, remainingVertices);
+      if (path) { paths.push(path); remainingVertices -= path.points.length; }
+    }
     const points = (Array.isArray(visual.points) ? visual.points : []).filter(point => Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1])).slice(0, 512);
     const bounds = Array.isArray(visual.bounds) && visual.bounds.length === 4 && visual.bounds.every(Number.isFinite) ? visual.bounds : null;
     if (!paths.length && !points.length && !bounds) return;
     const searchId = visual.searchId ?? report.searchId;
     const reportedAt = Number.isFinite(report.updatedAt) ? report.updatedAt : Date.now();
     const animated = visual.kind === 'search' || visual.kind === 'candidate';
-    spatialActivity = { kind: visual.kind, label: visual.label, layer: visual.layer, points, paths, bounds, searchId, receivedAt: performance.now(), expiresAt: reportedAt + 2000, animated };
+    const netKey = report.netId !== undefined && report.netId !== null ? String(report.netId) : (report.netName ? `name:${report.netName}` : null);
+    spatialActivity = { kind: visual.kind, label: visual.label, layer: visual.layer, points, paths, bounds, searchId, netKey, receivedAt: performance.now(), expiresAt: reportedAt + 2000, animated };
+    // Store only actual search/candidate samples, with one latest sample per net.
+    // Replays extend once along those segments; they are not parallel routing.
+    if (animated && paths.length && netKey !== null && !document.hidden && $('showLiveWork').checked && recentRouteStage(job) && activeStates.has(job.state) && job.state !== 'stopping' && reportedAt + 12000 > Date.now()) {
+      recentRouteActivity.delete(netKey);
+      recentRouteActivity.set(netKey, { ...spatialActivity, paths: paths.map(path => ({ ...path })), points: [], bounds: null, expiresAt: reportedAt + 12000, vertexCount: paths.reduce((sum, path) => sum + path.points.length, 0) });
+      pruneRecentRoutes();
+    }
     // Only shared, engine-reported segments can retract into a new search branch.
     // A truncated or unrelated branch is revealed separately; no link is invented.
     if (visual.kind === 'search' && previous?.kind === 'search' && searchId !== undefined && previous.searchId === searchId) {
@@ -834,27 +889,44 @@
     $('connectionActivityLabel').hidden = !enabled;
     if (!enabled) return;
     const visible = spatialActivityVisible();
+    const recent = recentRoutePreviews();
     const names = { pad: 'Examining pad', via: 'Examining via', grid: 'Preparing clearance grid', search: 'Testing search branches', candidate: 'Unverified candidate', trace: 'Examining trace', check: 'Checking geometry' };
     const details = { pad: 'Actual pad location', via: 'Actual via location', grid: 'Current grid area', search: 'Actual explored paths · not routed copper', candidate: 'Proposed path under evaluation', trace: 'Engine-reported trace', check: 'Current rule-check area' };
-    $('activityVisualTitle').textContent = visible ? names[spatialActivity.kind] : (phaseName(activityJob()?.phase) || 'Engine activity');
-    $('activityVisualDetail').textContent = visible ? (spatialActivity.label || details[spatialActivity.kind]) : (!board ? 'Waiting for board preview' : (spatialActivity ? 'Waiting for next location update' : 'No location reported for this stage'));
-    $('connectionActivityLabel').dataset.kind = visible ? spatialActivity.kind : 'phase';
+    const currentPaths = visible && spatialActivity.paths.some(path => spatialLayerVisible(path.layer ?? spatialActivity.layer)) && ['search', 'candidate'].includes(spatialActivity.kind) ? 1 : 0;
+    const count = recent.length + currentPaths;
+    const title = visible ? names[spatialActivity.kind] : (phaseName(activityJob()?.phase) || 'Engine activity');
+    $('activityVisualTitle').textContent = recent.length ? `${title} · current + recent` : title;
+    $('activityVisualDetail').textContent = recent.length ? `${count} sampled net ${count === 1 ? 'path' : 'paths'} · recent samples fade · not routed copper` : (visible ? (spatialActivity.label || details[spatialActivity.kind]) : (!board ? 'Waiting for board preview' : (spatialActivity ? 'Waiting for next location update' : 'No location reported for this stage')));
+    $('connectionActivityLabel').dataset.kind = visible ? spatialActivity.kind : (recent.length ? 'search' : 'phase');
+  }
+
+  function activityIsAnimating() {
+    if (reducedMotion.matches || !activityEnabled()) return false;
+    const now = performance.now();
+    return (spatialActivityVisible() && spatialActivity.animated && now - spatialActivity.receivedAt < 120) || recentRoutePreviews().some(item => now - item.receivedAt < 900);
   }
 
   function syncActivityVisual() {
     stopActivityFrames();
+    if (document.hidden || !$('showLiveWork').checked) recentRouteActivity.clear();
     updateSpatialCaption();
     paintActivity();
-    if (!spatialActivityVisible()) return;
-    activityExpiryTimer = setTimeout(() => { activityExpiryTimer = null; syncActivityVisual(); }, Math.max(1, spatialActivity.expiresAt - Date.now() + 5));
-    if (spatialActivity.animated && !reducedMotion.matches && performance.now() - spatialActivity.receivedAt < 120) activityFrame = requestAnimationFrame(animateReportedPath);
+    const recent = recentRoutePreviews();
+    const current = spatialActivityVisible();
+    if (!current && !recent.length) return;
+    const expires = Math.min(current ? spatialActivity.expiresAt : Infinity, ...recent.map(item => item.expiresAt));
+    // Recent samples fade at a low refresh rate once their one-time replay ends.
+    const fadeTick = recent.length && !reducedMotion.matches ? 250 : Infinity;
+    activityExpiryTimer = setTimeout(() => { activityExpiryTimer = null; syncActivityVisual(); }, Math.max(1, Math.min(fadeTick, expires - Date.now() + 5)));
+    if (activityIsAnimating()) activityFrame = requestAnimationFrame(animateReportedPath);
   }
 
   function animateReportedPath() {
     activityFrame = null;
-    if (!spatialActivityVisible()) { syncActivityVisual(); return; }
-    paintActivity();
-    if (!reducedMotion.matches && performance.now() - spatialActivity.receivedAt < 120) activityFrame = requestAnimationFrame(animateReportedPath);
+    if (!activityEnabled()) { syncActivityVisual(); return; }
+    if (performance.now() - lastActivityPaintAt >= 30) paintActivity();
+    if (activityIsAnimating()) activityFrame = requestAnimationFrame(animateReportedPath);
+    else paintActivity();
   }
 
   function strokeActivityPath(path, distance, color) {
@@ -876,10 +948,20 @@
   }
 
   function paintActivity() {
+    lastActivityPaintAt = performance.now();
     activityCtx.clearRect(0, 0, view.width, view.height);
+    if (!activityEnabled() || !board) return;
+    const colors = { pad: '#9bf0d6', via: '#dfb0f4', grid: '#7fd0ed', search: '#7ee5f4', candidate: '#ffc47c', trace: '#a2efd0', check: '#ebdb97' };
+    for (const recent of recentRoutePreviews()) {
+      const fraction = reducedMotion.matches ? 1 : Math.min(1, Math.max(0, (performance.now() - recent.receivedAt) / 900));
+      activityCtx.save(); activityCtx.lineCap = 'round'; activityCtx.lineJoin = 'round';
+      activityCtx.globalAlpha = reducedMotion.matches ? .45 : .18 + .42 * Math.max(0, Math.min(1, (recent.expiresAt - Date.now()) / 12000));
+      activityCtx.setLineDash(recent.kind === 'candidate' ? [9, 3] : [3, 3]);
+      for (const path of recent.paths) if (spatialLayerVisible(path.layer ?? recent.layer)) strokeActivityPath(path, path.length * fraction, colors[recent.kind]);
+      activityCtx.restore();
+    }
     if (!spatialActivityVisible()) return;
     const visual = spatialActivity;
-    const colors = { pad: '#9bf0d6', via: '#dfb0f4', grid: '#7fd0ed', search: '#7ee5f4', candidate: '#ffc47c', trace: '#a2efd0', check: '#ebdb97' };
     const color = colors[visual.kind];
     const fraction = reducedMotion.matches || !visual.animated ? 1 : Math.min(1, Math.max(0, (performance.now() - visual.receivedAt) / 120));
     activityCtx.save(); activityCtx.lineCap = 'round'; activityCtx.lineJoin = 'round'; activityCtx.strokeStyle = color; activityCtx.fillStyle = color; activityCtx.lineWidth = 2;
@@ -1075,6 +1157,11 @@
     return selected.size === layers.length && layers.every(layer => selected.has(layer));
   }
 
+  function sameRoutingRule(net, imported = false) {
+    return sameLayerSelection(netLayerDrafts.get(net.id), imported ? net.importedLayers : net.allowedLayers) &&
+      netShortDrafts.get(net.id) === Boolean(imported ? net.importedPreferShort : net.preferShort);
+  }
+
   function filteredNetLayerNets() {
     const query = $('netLayerSearch').value.trim().toLocaleLowerCase();
     if (!query.includes('*')) return netLayersData.nets.filter(net => String(net.name).toLocaleLowerCase().includes(query));
@@ -1104,8 +1191,8 @@
     for (const net of netLayersData.nets) {
       const selected = netLayerDrafts.get(net.id);
       const row = net.row;
-      const edited = !sameLayerSelection(selected, net.allowedLayers);
-      const imported = sameLayerSelection(selected, net.importedLayers);
+      const edited = !sameRoutingRule(net);
+      const imported = sameRoutingRule(net, true);
       const unreachable = (net.padLayers || []).filter(layers => layers.length && !layers.some(layer => selected.has(layer))).length;
       if (edited) changed++;
       if (!selected.size) invalid++;
@@ -1113,15 +1200,17 @@
       row.hidden = !shownIds.has(net.id);
       row.classList.toggle('net-layer-invalid', selected.size === 0);
       row.classList.toggle('net-layer-edited', edited);
-      net.status.textContent = !selected.size ? 'Select at least one layer' : (imported ? 'Imported rule' : 'Custom layer rule');
+      net.status.textContent = !selected.size ? 'Select at least one layer' : (imported ? 'Imported rules' : 'Custom rules');
       net.padWarning.hidden = !unreachable;
       net.padWarning.textContent = unreachable ? `${number(unreachable)} ${unreachable === 1 ? 'pad lies' : 'pads lie'} outside selected layers` : '';
       net.reset.disabled = unavailable || imported;
-      for (const checkbox of row.querySelectorAll('input')) {
+      for (const checkbox of row.querySelectorAll('input[data-layer-id]')) {
         checkbox.disabled = unavailable;
         checkbox.checked = selected.has(Number(checkbox.dataset.layerId));
         checkbox.setAttribute('aria-invalid', String(!selected.size));
       }
+      net.shortCheckbox.disabled = unavailable;
+      net.shortCheckbox.checked = netShortDrafts.get(net.id);
     }
     for (const checkbox of $('netLayerHead').querySelectorAll('input[data-layer-id]')) {
       const layerId = Number(checkbox.dataset.layerId);
@@ -1130,19 +1219,36 @@
       checkbox.indeterminate = selectedCount > 0 && selectedCount < shownNets.length;
       checkbox.disabled = unavailable || shownNets.length === 0;
     }
+    const shortHeading = $('netShortAll');
+    const shortCount = shownNets.filter(net => netShortDrafts.get(net.id)).length;
+    shortHeading.checked = shownNets.length > 0 && shortCount === shownNets.length;
+    shortHeading.indeterminate = shortCount > 0 && shortCount < shownNets.length;
+    shortHeading.disabled = unavailable || shownNets.length === 0;
     $('netLayerCount').textContent = `${number(shownNets.length)} of ${number(netLayersData.nets.length)} nets shown · ${number(changed)} ${changed === 1 ? 'change' : 'changes'} to apply`;
     $('netLayerValidation').hidden = !invalid;
     $('netLayerValidation').textContent = invalid ? `Select at least one layer for every net. ${number(invalid)} ${invalid === 1 ? 'net needs' : 'nets need'} a layer, including any hidden by your search.` : '';
     $('netLayerPadWarning').hidden = !inaccessible;
     $('netLayerPadWarning').textContent = inaccessible ? `${number(inaccessible)} ${inaccessible === 1 ? 'pad has' : 'pads have'} no selected layer in common. Vias in SMD pads may be needed to reach these nets. Check the pad layout and via rules; these selections may leave connections unrouted.` : '';
     $('applyNetLayers').disabled = unavailable || invalid > 0 || changed === 0;
-    $('resetAllNetLayers').disabled = unavailable || netLayersData.nets.every(net => sameLayerSelection(netLayerDrafts.get(net.id), net.importedLayers));
+    $('resetAllNetLayers').disabled = unavailable || netLayersData.nets.every(net => sameRoutingRule(net, true));
     $('netLayerSearch').disabled = unavailable;
   }
 
   function renderNetLayerRows() {
     const heading = document.createElement('tr');
     const netHeading = document.createElement('th'); netHeading.scope = 'col'; netHeading.textContent = 'Net'; heading.append(netHeading);
+    const shortHeading = document.createElement('th'); shortHeading.scope = 'col'; shortHeading.className = 'net-short-column';
+    const shortLabel = document.createElement('label'); shortLabel.className = 'net-layer-column';
+    const shortName = document.createElement('span'); shortName.textContent = 'Prefer shorter routes';
+    const shortAll = document.createElement('input'); shortAll.type = 'checkbox'; shortAll.id = 'netShortAll'; shortAll.dataset.preferShort = 'all';
+    shortAll.setAttribute('aria-label', 'Prefer shorter routes: all shown nets');
+    shortAll.setAttribute('aria-describedby', 'netShortDescription netLayerBulkHelp');
+    shortAll.addEventListener('change', () => {
+      if (!connected || busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
+      for (const net of filteredNetLayerNets()) netShortDrafts.set(net.id, shortAll.checked);
+      updateNetLayerDraftStatus();
+    });
+    shortLabel.append(shortName, shortAll); shortHeading.append(shortLabel); heading.append(shortHeading);
     for (const layer of netLayersData.layers) {
       const th = document.createElement('th'); th.scope = 'col';
       const label = document.createElement('label'); label.className = 'net-layer-column';
@@ -1170,6 +1276,16 @@
       const status = document.createElement('small'); status.className = 'net-layer-rule-status';
       const warning = document.createElement('small'); warning.className = 'net-layer-row-warning';
       name.append(label, status, warning); row.append(name);
+      const shortCell = document.createElement('td'); shortCell.className = 'net-short-column';
+      const shortCheckbox = document.createElement('input'); shortCheckbox.type = 'checkbox'; shortCheckbox.dataset.preferShort = String(net.id);
+      shortCheckbox.setAttribute('aria-label', `${net.name}: Prefer shorter routes`);
+      shortCheckbox.setAttribute('aria-describedby', 'netShortDescription');
+      shortCheckbox.addEventListener('change', () => {
+        if (!connected || busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
+        netShortDrafts.set(net.id, shortCheckbox.checked);
+        updateNetLayerDraftStatus();
+      });
+      shortCell.append(shortCheckbox); row.append(shortCell);
       for (const layer of netLayersData.layers) {
         const cell = document.createElement('td');
         const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.layerId = String(layer.id);
@@ -1184,13 +1300,15 @@
       }
       const resetCell = document.createElement('td');
       const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset';
-      reset.setAttribute('aria-label', `Reset ${net.name} to imported layers`);
+      reset.setAttribute('aria-label', `Reset ${net.name} to imported rules`);
       reset.addEventListener('click', () => {
         if (busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
-        netLayerDrafts.set(net.id, new Set(net.importedLayers)); updateNetLayerDraftStatus();
+        netLayerDrafts.set(net.id, new Set(net.importedLayers));
+        netShortDrafts.set(net.id, Boolean(net.importedPreferShort));
+        updateNetLayerDraftStatus();
       });
       resetCell.append(reset); row.append(resetCell); rows.append(row);
-      net.row = row; net.status = status; net.padWarning = warning; net.reset = reset;
+      net.row = row; net.status = status; net.padWarning = warning; net.reset = reset; net.shortCheckbox = shortCheckbox;
     }
     $('netLayerRows').replaceChildren(rows);
     updateNetLayerDraftStatus();
@@ -1201,10 +1319,11 @@
     if (!jobId || !connected || busy || isActive()) return;
     busy = true; updateControls();
     try {
-      const data = await api('/api/net-layers');
+      const data = await api('/api/routing-rules');
       if (currentState?.job?.id !== jobId || isActive() || data.jobId !== jobId) return;
       netLayersData = { ...data, layers: displayLayers(data.layers), nets: [...data.nets].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true, sensitivity: 'base' })) };
       netLayerDrafts = new Map(netLayersData.nets.map(net => [net.id, new Set(net.allowedLayers)]));
+      netShortDrafts = new Map(netLayersData.nets.map(net => [net.id, Boolean(net.preferShort)]));
       $('netLayerSearch').value = '';
       renderNetLayerRows();
       $('netLayersDialog').showModal();
@@ -1216,12 +1335,12 @@
     const data = netLayersData;
     if (!data || !connected || busy || isActive() || currentState?.job?.id !== data.jobId) return;
     if (data.nets.some(net => !netLayerDrafts.get(net.id).size)) { updateNetLayerDraftStatus(); return; }
-    const changes = data.nets.filter(net => !sameLayerSelection(netLayerDrafts.get(net.id), net.allowedLayers)).map(net => ({ netId: net.id, layers: data.layers.filter(layer => netLayerDrafts.get(net.id).has(layer.id)).map(layer => layer.id) }));
+    const changes = data.nets.filter(net => !sameRoutingRule(net)).map(net => ({ netId: net.id, layers: data.layers.filter(layer => netLayerDrafts.get(net.id).has(layer.id)).map(layer => layer.id), preferShort: netShortDrafts.get(net.id) }));
     if (!changes.length) return;
     $('netLayersDialog').close();
     busy = true; updateControls();
-    try { await post('/api/net-layers', { jobId: data.jobId, changes }); }
-    catch (error) { toast(`Layer rules were not applied. ${error.message}`, true); }
+    try { await post('/api/routing-rules', { jobId: data.jobId, changes }); }
+    catch (error) { toast(`Routing rules were not applied. ${error.message}`, true); }
     finally { busy = false; updateControls(); }
   }
 
@@ -1258,11 +1377,12 @@
   $('applyNetLayers').addEventListener('click', () => void applyNetLayers());
   $('cancelNetLayers').addEventListener('click', () => $('netLayersDialog').close());
   $('closeNetLayers').addEventListener('click', () => $('netLayersDialog').close());
-  $('netLayersDialog').addEventListener('close', () => { netLayersData = null; netLayerDrafts.clear(); });
+  $('netLayersDialog').addEventListener('close', () => { netLayersData = null; netLayerDrafts.clear(); netShortDrafts.clear(); });
   $('netLayerSearch').addEventListener('input', updateNetLayerDraftStatus);
   $('resetAllNetLayers').addEventListener('click', () => {
     if (!netLayersData || busy || isActive() || currentState?.job?.id !== netLayersData.jobId) return;
     netLayerDrafts = new Map(netLayersData.nets.map(net => [net.id, new Set(net.importedLayers)]));
+    netShortDrafts = new Map(netLayersData.nets.map(net => [net.id, Boolean(net.importedPreferShort)]));
     updateNetLayerDraftStatus();
   });
   $('fileInput').addEventListener('change', event => void upload(event.target.files[0]));

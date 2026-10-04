@@ -5,9 +5,9 @@
   const subscribers = new Set(), activitySubscribers = new Set();
   let activitySequence=0;
   let job = null, worker = null, workerUrl = null, inputText = null;
-  let board = null, preview = null, exports = null, bestChecked = null, clearTransaction = null, ruleTransaction = null, importedNetLayers = null, serial = 0, timer = null, watchdog = null;
+  let board = null, preview = null, exports = null, bestChecked = null, clearTransaction = null, ruleTransaction = null, importedNetRules = null, serial = 0, timer = null, watchdog = null;
   const logs = [];
-  const base = {appVersion:'0.2.12',engineVersion:'Ramen JS 0.2.12',fanoutVersion:'Ramen SMD escape'};
+  const base = {appVersion:'0.2.13',engineVersion:'Ramen JS 0.2.13',fanoutVersion:'Ramen SMD escape'};
   function notifyActivity() {
     const update={jobId:job?.id,state:job?.state,phase:job?.phase,activity:job?.activity,lastEngineUpdateAt:job?.lastEngineUpdateAt,operation:job?.operation,counters:job?.counters,deadlineAt:job?.deadlineAt,remainingSeconds:remaining(),startedAt:job?.startedAt,endedAt:job?.endedAt};
     for(const fn of activitySubscribers){try{fn(update);}catch(_){}}
@@ -43,7 +43,8 @@
       padsByNet.get(pad.net).push([...new Set(pad.shapes.map(shape=>shape.layer))]);
     }
     const nets=(b?.nets||[]).map(net=>({id:net.id,name:net.name,
-      allowedLayers:[...(net.useLayers||all)],importedLayers:[...(importedNetLayers?.[net.id]||net.useLayers||all)],
+      allowedLayers:[...(net.useLayers||all)],importedLayers:[...(importedNetRules?.[net.id]?.layers||net.useLayers||all)],
+      preferShort:net.preferShort===true,importedPreferShort:importedNetRules?.[net.id]?.preferShort??(net.preferShort===true),
       padLayers:padsByNet.get(net.id)||[]}));
     return {jobId:job?.id,layers,nets};
   }
@@ -51,11 +52,12 @@
     if(!job||!board)return;
     const settings=netLayerSettings(board),nets=new Map(settings.nets.map(net=>[net.id,net]));
     const same=(a,b)=>a.length===b.length&&a.every(layer=>b.includes(layer));
-    job.layerRulesChanged=settings.nets.some(net=>!same(net.allowedLayers,net.importedLayers));
+    job.layerRulesChanged=settings.nets.some(net=>!same(net.allowedLayers,net.importedLayers)||net.preferShort!==net.importedPreferShort);
     job.layerRuleSummary={restrictedNets:settings.nets.filter(net=>net.allowedLayers.length<settings.layers.length).length,
-      totalNets:settings.nets.length,
+      totalNets:settings.nets.length,shortRouteNets:settings.nets.filter(net=>net.preferShort).length,
       conflictingTraces:(board.traces||[]).filter(trace=>nets.has(trace.net)&&!nets.get(trace.net).allowedLayers.includes(trace.layer)).length,
       inaccessiblePads:settings.nets.reduce((count,net)=>count+net.padLayers.filter(layers=>!layers.some(layer=>net.allowedLayers.includes(layer))).length,0)};
+    job.routingRulesChanged=job.layerRulesChanged;job.routingRuleSummary=job.layerRuleSummary;
   }
   function restoreBeforeRules(message,error=null) {
     kill();
@@ -77,7 +79,7 @@
   }
   function stopWithBest(reason,message) {
     if(clearTransaction)return restoreBeforeClear(message+' Routing was not cleared; the previous board is unchanged.');
-    if(ruleTransaction)return restoreBeforeRules(message+' Layer rules were not changed; the previous board is unchanged.');
+    if(ruleTransaction)return restoreBeforeRules(message+' Routing rules were not changed; the previous board is unchanged.');
     kill();job.stopReason=reason;job.state=reason;job.phase=reason;job.endedAt=Date.now();job.suggestions={};
     if(bestChecked) {
       board=bestChecked.board;preview=bestChecked.preview;exports=bestChecked.exports;
@@ -181,7 +183,7 @@
       const advice=placementAdvice(result,initialBoard,includeIncomplete);
       stage('exporting','Preparing the checked preview and downloadable results.',{},writeLog);
       return {board:result,preview:geometry(result,prepared?.connection),stats:finalStats,advice,fromInput,
-        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.12',settings:options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
+        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.13',settings:options,routingRules:{shorterNets:result.nets.filter(net=>net.preferShort).map(net=>net.name)},units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
     }
     self.onmessage=async event=>{
       const m=event.data;
@@ -203,7 +205,7 @@
           send({type:'cleared',clearedInput,warnings:cleared.warnings||[],...result});return;
         }
         if(m.type==='layer-rules') {
-          const editedInput=dsn.setNetRoutingLayers(b,m.changes),edited=dsn.parse(editedInput,m.name),finalStats=stats(edited);
+          const editedInput=dsn.setNetRoutingRules(b,m.changes),edited=dsn.parse(editedInput,m.name),finalStats=stats(edited);
           // Forbidden imported traces remain visible and checked. The user can
           // widen the rule or deliberately clear routing before trying again.
           const result=checkedResult(edited,edited,m.options,m.name,finalStats,finalStats,true,false,null,true);
@@ -258,6 +260,7 @@
     const id=++serial;
     const source='"use strict";\n'+[createRamenDSN,createRamenGeometry,createRamenOptimizer,createRamenFanout,createRamenRouter,createRamenAdvisor,workerMain].map(fn=>fn.toString()).join('\n')+'\nworkerMain();';
     job={id:String(id),name:job?.name||'board.dsn',state:clearing?'clearing':editingRules?'updating_rules':type==='inspect'?'inspecting':'starting',phase:clearing?'clearing':editingRules?'updating_rules':'loading',startedAt:Date.now(),settings:options,stats:transactional?saved.job.stats:null,initialStats:null,error:null,clearError:null,ruleError:null,hasOutput:false,routingCleared,layerRulesChanged,layerRuleSummary,routingSummary:transactional?routingSummary(board):null,suggestions:{},advice:{items:[]},bestResult:{available:false},revision:0,pass:0};
+    job.routingRulesChanged=layerRulesChanged;job.routingRuleSummary=layerRuleSummary;
     job.operation=type;job.counters=null;
     job.deadlineAt=job.startedAt+(type==='run'?options.timeoutMinutes*60000:120000);
     job.lastEngineUpdateAt=null;
@@ -267,7 +270,7 @@
       worker=new Worker(workerUrl);
     } catch(error) {
       if(clearing)restoreBeforeClear('Routing could not be cleared: '+error.message,error.message);
-      if(editingRules)restoreBeforeRules('Layer rules could not be updated: '+error.message,error.message);
+      if(editingRules)restoreBeforeRules('Routing rules could not be updated: '+error.message,error.message);
       throw error;
     }
     worker.onmessage=e=>{
@@ -280,17 +283,17 @@
       if(m.type==='activity'){if(m.phase&&!transactional)job.phase=m.phase;notifyActivity();return;}
       if(m.type==='progress'&&transactional){if(m.message&&m.log!==false)log(m.message);notify();return;}
       if(editingRules) {
-        if(m.type==='error') {restoreBeforeRules('Layer rules could not be updated: '+m.error,m.error);return;}
+        if(m.type==='error') {restoreBeforeRules('Routing rules could not be updated: '+m.error,m.error);return;}
         if(m.type!=='rules-updated')return;
         if(!m.board||!m.preview||!m.exports||!m.stats?.drcChecked||!m.stats?.widthRulesChecked||typeof m.editedInput!=='string') {
-          restoreBeforeRules('Layer rules could not be updated: the worker did not return a checked result.','The worker did not return a checked result.');return;
+          restoreBeforeRules('Routing rules could not be updated: the worker did not return a checked result.','The worker did not return a checked result.');return;
         }
         board=m.board;preview=m.preview;exports=m.exports;inputText=m.editedInput;
         job.stats=m.stats;job.initialStats=m.stats;job.routingSummary=routingSummary(board);updateLayerRules();
         job.advice=m.advice||{items:[]};job.hasOutput=true;
         job.state='ready';job.phase='ready';job.endedAt=Date.now();job.revision++;
         rememberChecked(m);ruleTransaction=null;kill();
-        log('Net layer rules updated. Existing input routing is retained. Start routing when ready.');
+        log('Routing rules updated. Existing input routing is retained. Start routing when ready.');
         if(job.layerRuleSummary.conflictingTraces)log(job.layerRuleSummary.conflictingTraces+' imported trace(s) are on disallowed layers. Clear routing & start over, or change these rules.');
         if(job.layerRuleSummary.inaccessiblePads)log(job.layerRuleSummary.inaccessiblePads+' pad(s) have no copper on a selected trace layer and may need a permitted via or a different layer selection.');
         for(const warning of m.warnings||[])log('Input note: '+warning);
@@ -324,7 +327,7 @@
       if(m.phase)job.phase=m.phase;
       if(m.pass!==undefined&&!job.counters)job.pass=m.pass;
       if(m.type==='loaded') {
-        if(importedNetLayers===null)importedNetLayers=Object.fromEntries(netLayerSettings(board).nets.map(net=>[net.id,net.allowedLayers.slice()]));
+        if(importedNetRules===null)importedNetRules=Object.fromEntries(netLayerSettings(board).nets.map(net=>[net.id,{layers:net.allowedLayers.slice(),preferShort:net.preferShort}]));
         updateLayerRules();
         job.initialStats=m.stats;
         rememberChecked({...m,advice:m.checkpointAdvice||m.advice});
@@ -344,9 +347,9 @@
       if(m.type==='error') {if(m.code==='NET_LAYER_CONFLICT'&&bestChecked?.fromInput){board=bestChecked.board;preview=bestChecked.preview;exports=bestChecked.exports;job.stats={...bestChecked.stats};job.routingSummary=routingSummary(board);updateLayerRules();job.advice=bestChecked.advice;job.hasOutput=true;job.revision++;}job.state='error';job.phase='error';job.error=m.error;job.endedAt=Date.now();log('Error: '+m.error);if(m.stack)log(m.stack);kill();}
       notify();
     };
-    worker.onerror=e=>{if(id!==serial||!job||!active.has(job.state))return;const message=e.message||'Browser worker failed to start. Use a current Chrome, Edge or Firefox browser.';if(clearing){restoreBeforeClear('Routing could not be cleared: '+message,message);return;}if(editingRules){restoreBeforeRules('Layer rules could not be updated: '+message,message);return;}job.error=message;job.state='error';job.phase='error';job.endedAt=Date.now();log(job.error);kill();notify();};
+    worker.onerror=e=>{if(id!==serial||!job||!active.has(job.state))return;const message=e.message||'Browser worker failed to start. Use a current Chrome, Edge or Firefox browser.';if(clearing){restoreBeforeClear('Routing could not be cleared: '+message,message);return;}if(editingRules){restoreBeforeRules('Routing rules could not be updated: '+message,message);return;}job.error=message;job.state='error';job.phase='error';job.endedAt=Date.now();log(job.error);kill();notify();};
     try {worker.postMessage({type,text:inputText,name:job.name,options,changes,deadlineAt:job.deadlineAt});}
-    catch(error) {if(clearing)restoreBeforeClear('Routing could not be cleared: '+error.message,error.message);if(editingRules)restoreBeforeRules('Layer rules could not be updated: '+error.message,error.message);throw error;}
+    catch(error) {if(clearing)restoreBeforeClear('Routing could not be cleared: '+error.message,error.message);if(editingRules)restoreBeforeRules('Routing rules could not be updated: '+error.message,error.message);throw error;}
     const timeLimit=Math.max(0,job.deadlineAt-Date.now());
     timer=setTimeout(()=>{if(id===serial&&job&&active.has(job.state))stopWithBest('timed_out','Time budget reached.');},timeLimit);
     watchdog=setTimeout(()=>{if(id===serial&&job&&active.has(job.state))stopWithBest('timed_out','The worker exceeded its time budget and was terminated.');},timeLimit+30000);
@@ -357,7 +360,7 @@
     requireIdle();if(typeof text!=='string'||!text.trim())throw new Error('The DSN file is empty.');
     if(text.length>64*1024*1024)throw new Error('The DSN file is larger than 64 MiB.');
     if(!/\.dsn$/i.test(name))throw new Error('Choose a Specctra .dsn file.');
-    inputText=text;job={name};importedNetLayers=null;logs.length=0;
+    inputText=text;job={name};importedNetRules=null;logs.length=0;
     return launch('inspect',getSettings());
   }
   async function request(path,options={}) {
@@ -371,27 +374,33 @@
       let text;if(typeof data==='string')text=data;else if(data instanceof Blob)text=await data.text();else if(data instanceof ArrayBuffer||ArrayBuffer.isView(data))text=new TextDecoder().decode(data);else throw new Error('Choose a DSN file.');
       return importText(text,params.get('name')||'board.dsn');
     }
-    if(endpoint==='/api/net-layers') {
+    if(endpoint==='/api/routing-rules'||endpoint==='/api/net-layers') {
       requireIdle();
-      if(!inputText||!board||!job)throw new Error('Load a board before choosing net layers.');
+      if(!inputText||!board||!job)throw new Error('Load a board before choosing routing rules.');
       const method=String(options.method||'GET').toUpperCase();
       if(method==='GET')return netLayerSettings(board);
-      if(method!=='POST')throw new Error('Layer rule changes require a confirmed POST action.');
-      if(typeof data?.jobId!=='string'||data.jobId!==job.id)throw new Error('The selected board changed. Review its layer rules again.');
-      if(!Array.isArray(data.changes))throw new Error('Choose the nets and their allowed layers.');
+      if(method!=='POST')throw new Error('Routing rule changes require a confirmed POST action.');
+      if(typeof data?.jobId!=='string'||data.jobId!==job.id)throw new Error('The selected board changed. Review its routing rules again.');
+      if(!Array.isArray(data.changes))throw new Error('Choose the nets and their routing rules.');
       const settings=netLayerSettings(board),nets=new Map(settings.nets.map(net=>[net.id,net]));
       const layerIds=new Set(settings.layers.map(layer=>layer.id)),seen=new Set();
       for(const change of data.changes) {
-        if(!change||!Number.isInteger(change.netId)||!nets.has(change.netId))throw new Error('A selected net is unknown. Reload the net layer settings.');
+        if(!change||!Number.isInteger(change.netId)||!nets.has(change.netId))throw new Error('A selected net is unknown. Reload the routing rules.');
         if(seen.has(change.netId))throw new Error('Each net may only be changed once.');
         seen.add(change.netId);
-        if(!Array.isArray(change.layers)||!change.layers.length)throw new Error('Every net needs at least one allowed layer.');
-        if(change.layers.some(layer=>!Number.isInteger(layer)||!layerIds.has(layer)))throw new Error('Choose only existing copper layers.');
-        if(new Set(change.layers).size!==change.layers.length)throw new Error('An allowed layer cannot be listed twice.');
+        const hasLayers=Object.prototype.hasOwnProperty.call(change,'layers'),hasShort=Object.prototype.hasOwnProperty.call(change,'preferShort');
+        if(!hasLayers&&!hasShort)throw new Error('Choose a routing rule to change.');
+        if(hasShort&&typeof change.preferShort!=='boolean')throw new Error('The shorter-route preference must be true or false.');
+        if(hasLayers) {
+          if(!Array.isArray(change.layers)||!change.layers.length)throw new Error('Every net needs at least one allowed layer.');
+          if(change.layers.some(layer=>!Number.isInteger(layer)||!layerIds.has(layer)))throw new Error('Choose only existing copper layers.');
+          if(new Set(change.layers).size!==change.layers.length)throw new Error('An allowed layer cannot be listed twice.');
+        }
       }
-      const changes=data.changes.filter(change=>{const current=nets.get(change.netId).allowedLayers;return current.length!==change.layers.length||current.some(layer=>!change.layers.includes(layer));});
+      const changes=data.changes.filter(change=>{const current=nets.get(change.netId);return (Object.prototype.hasOwnProperty.call(change,'layers')&&(current.allowedLayers.length!==change.layers.length||current.allowedLayers.some(layer=>!change.layers.includes(layer))))||
+        (Object.prototype.hasOwnProperty.call(change,'preferShort')&&current.preferShort!==change.preferShort);});
       if(!changes.length)return state();
-      log('Updating net layer rules. The board will return to its input routing.');
+      log('Updating routing rules. The board will return to its input routing.');
       return launch('layer-rules',getSettings(job.settings),changes);
     }
     if(endpoint==='/api/run') {
@@ -417,7 +426,7 @@
       const type=params.get('type')||'ses',result=getDownload(type);
       return {blob:result.blob,disposition:'attachment; filename="'+result.filename+'"'};
     }
-    if(endpoint==='/api/quit') {kill();serial++;job=null;board=null;preview=null;exports=null;bestChecked=null;clearTransaction=null;ruleTransaction=null;importedNetLayers=null;inputText=null;logs.length=0;notify();return state();}
+    if(endpoint==='/api/quit') {kill();serial++;job=null;board=null;preview=null;exports=null;bestChecked=null;clearTransaction=null;ruleTransaction=null;importedNetRules=null;inputText=null;logs.length=0;notify();return state();}
     throw new Error('Unknown local action.');
   }
   function getDownload(type) {

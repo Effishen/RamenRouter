@@ -53,9 +53,11 @@ last-update time tells you when the engine most recently reported progress.
 With **Live work** enabled, the preview highlights the pads and copper being
 examined, the grid rows being prepared, and the actual search branches and
 candidate paths being tested. Trial paths are labelled separately from routed
-tracks. The view shows recent samples of the engine’s work; it does not replay
-an animation while waiting for an update. Turn off **Live work** to hide these
-highlights. Reduced-motion settings keep the highlights still.
+tracks. The current search stays bright while recent real paths fade out.
+The preview can show paths for up to a quarter of your board's nets at once,
+with a maximum of 25. It fills as the engine reports paths, so fewer may be
+visible. These are samples of current and recent work. Turn off **Live work**
+to hide these highlights. Reduced-motion settings keep the highlights still.
 
 Already have a partly or fully routed DSN? Choose **Clear routing & start over**
 below the loaded filename. After you confirm, RamenRouter removes all traces
@@ -64,17 +66,24 @@ connections and board rules stay in place, and your original file is unchanged.
 Review the cleared board, then click **Start routing** when you are ready.
 Download any result you want to keep before clearing it.
 
-Want a particular net to stay on one side of the board? Open **Net routing
-layers** under Routing setup, find the net, and select the layers its traces
-may use. You can choose one layer or several. **Reset** restores the layer
-rule from your imported file. These choices affect routing; the preview's
+Want a particular net to stay on one side of the board? Open **Routing rules**
+under Routing setup, find the net, and select the layers its traces may use.
+You can choose one layer or several. **Reset** restores that net's choices
+from your imported file. These choices affect routing; the preview's
 **Visible layers** controls only change what you see.
+
+Enable **Prefer shorter routes** for nets where length matters. RamenRouter
+gives these nets earlier routing priority and favours shorter paths, even
+when that needs more vias. With **Smart search**, it can keep looking for a
+shorter result after making all connections. Completing the board and
+respecting its routing rules still come first. This is a preference, not a
+guarantee of the shortest possible path or a length-matching feature.
 
 Recognised EasyEDA layer IDs are shown as **Top Layer**, **Inner1**,
 **Inner2**, and **Bottom Layer**, with their original numbers in brackets.
 They appear from top to bottom in the layer table and layer list.
 
-Use a layer’s header checkbox to check or uncheck every net shown in the
+Use a column's header checkbox to check or uncheck every net shown in the
 table. With no search, this changes all nets. With a search, it changes only
 matching nets; the other nets keep their selections.
 
@@ -82,12 +91,13 @@ Search with **\*** wildcards: **USB\*** finds names starting with USB,
 **\*CLK** finds names ending with CLK, and **\*CLK\*** finds names containing
 CLK. Searches ignore capitalisation. Plain text still finds any part of a name.
 
-Save your current result before applying layer changes: applying replaces it
+Save your current result before applying routing rules: applying replaces it
 with the input board, keeping its imported traces and vias. If existing traces
 use an excluded layer, revise the selection or choose **Clear routing & start
 over**. Pads and through vias keep their physical layer spans. Some layer
 choices can leave pads hard to reach, so review any warnings, then click
-**Start routing** when ready. Your exported DSN keeps your layer selections.
+**Start routing** when ready. Your exported DSN keeps your layer selections
+and shorter-route preferences for reopening in RamenRouter.
 
 With **Smart search** enabled, RamenRouter makes a final focused attempt when
 only a few connections remain. It keeps the best checked result throughout.
