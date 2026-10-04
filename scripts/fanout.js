@@ -18,6 +18,16 @@ function createRamenFanout(geometry) {
     if(options.viaInPad){board.viaAtSmd=true;board.viaInPadApplied=true;for(const def of board.viaDefs)def.attachAllowed=true;}
     const cancelled=()=>isCancelled()||Date.now()>deadline;
     let lastDetail=0;
+    let lastSpatial=0,hasSpatial=false,visualCandidateId=0;
+    const spatial=(message,activity,makeVisual)=>{const now=Date.now();if(now-lastSpatial<175)return;lastSpatial=now;hasSpatial=true;emit({type:'activity',phase:'fanout',message,activity:{...activity,visual:makeVisual()}});};
+    const clearSpatial=stage=>{if(!hasSpatial)return;hasSpatial=false;lastSpatial=0;emit({type:'activity',phase:'fanout',activity:{stage,visual:null}});};
+    const bundleVisual=(bundle,label)=>{
+      const paths=[];let remaining=512;
+      for(const trace of bundle.traces){if(remaining<2)break;const points=trace.points.slice(0,remaining).map(p=>p.slice(0,2));if(points.length>1){paths.push({layer:trace.layer,points});remaining-=points.length;}}
+      const points=[];for(const via of bundle.vias)for(const layer of via.layers){if(points.length>=64)break;points.push([via.x,via.y,layer]);}
+      return {kind:'candidate',label,paths,points};
+    };
+
     const detail=(message,activity={},force=false)=>{const now=Date.now();if(!force&&now-lastDetail<1200)return;lastDetail=now;emit({type:'progress',phase:'fanout',message,activity});};
     const pause=()=>new Promise(r=>setTimeout(r,0));
     detail('Checking pads and existing copper for fanout',{stage:'fanout-prepare',processed:0,total:board.pads.length},true);await pause();
@@ -62,7 +72,7 @@ function createRamenFanout(geometry) {
       for(const k of board.keepouts||[]){if(k.layers&&!k.layers.includes(p.layer)||k.kind==='via'&&p.kind!=='via')continue;const distance=G.distanceShapes(p.shape,k.shape);if(distance+EPS<(k.clearance??radius)||distance<=EPS)return false;}
       return true;
     }
-    function legalBundle(bundle,temporary=[]) {return bundle.traces.every(t=>traceLayers(nets.get(t.net)).includes(t.layer))&&itemPrimitives(bundle).every(p=>clearPrimitive(p,temporary));}
+    function legalBundle(bundle,temporary=[]) {const id=++visualCandidateId,netId=bundle.traces[0]?.net??bundle.vias[0]?.net;spatial('Testing fanout candidate · '+(nets.get(netId)?.name||'pad escape'),{stage:'fanout-candidate',netId,netName:nets.get(netId)?.name,candidateId:id},()=>bundleVisual(bundle,'Actual fanout candidate · being checked'));return bundle.traces.every(t=>traceLayers(nets.get(t.net)).includes(t.layer))&&itemPrimitives(bundle).every(p=>clearPrimitive(p,temporary));}
     function bundleFor(entry,end,normal,shoulder) {
       const p=entry.pad,net=entry.net,def=defs.get(net.viaName),layer=entry.shape.layer;
       const points=[[p.x,p.y]];
@@ -101,8 +111,8 @@ function createRamenFanout(geometry) {
     rows.sort((a,b)=>b.entries.length-a.entries.length);
     let rowCount=0,rowIndex=0;
     detail('Preparing SMD escapes · '+shapes.length+' eligible pads · '+rows.length+' dense rows',{stage:'fanout-rows',processed:0,total:rows.length},true);
-    for(const row of rows){if(cancelled())break;rowIndex++;
-      detail('Preparing dense row '+rowIndex+'/'+rows.length+' · '+row.entries.length+' pads',{stage:'fanout-rows',processed:rowIndex,total:rows.length});
+    for(const row of rows){if(cancelled())break;rowIndex++;detail('Preparing dense row '+rowIndex+'/'+rows.length+' · '+row.entries.length+' pads',{stage:'fanout-rows',processed:rowIndex,total:rows.length});
+      spatial('Inspecting dense pad row '+rowIndex+'/'+rows.length,{stage:'fanout-row',processed:rowIndex,total:rows.length},()=>({kind:'pad',points:row.entries.slice(0,64).map(e=>[e.pad.x,e.pad.y,e.shape.layer]),label:'Current dense pad row'}));
       const entries=row.entries.filter(e=>!attached.has(e.pad.id));if(entries.length<2)continue;
       const width=Math.max(...entries.map(e=>e.net.width)),normalHalf=Math.max(...entries.map(e=>e.geometry.longSpan/2));
       const pitch=Math.max(...entries.map(e=>defs.get(e.net.viaName).diameter+clearance(e.net.id)))+Math.max(.02,width*.025);
@@ -166,7 +176,7 @@ function createRamenFanout(geometry) {
           if(++work>12000||cancelled()||Date.now()>rowDeadline){exhausted=true;return;}
           if(complete)return;
           if(!domains.length){complete=chosen;return;}
-          if(work%128===0){detail('Fitting dense-row escapes · row '+rowIndex+'/'+rows.length+' · '+work+' combinations checked',{stage:'fanout-combinations',processed:rowIndex,total:rows.length,combinations:work});await pause();}
+          if(work%128===0){detail('Fitting dense-row escapes · row '+rowIndex+'/'+rows.length+' · '+work+' combinations checked',{stage:'fanout-combinations',processed:rowIndex,total:rows.length,combinations:work});spatial('Testing combined fanout escapes',{stage:'fanout-combinations',combinations:work},()=>bundleVisual({traces:chosen.flatMap(b=>b.traces),vias:chosen.flatMap(b=>b.vias)},'Actual fanout combination · being checked'));await pause();}
           domains.sort((a,b)=>a.length-b.length);
           if(!domains[0].length)return;
           for(const candidate of domains[0]){
@@ -185,6 +195,7 @@ function createRamenFanout(geometry) {
     let padIndex=0;detail('Checking remaining SMD pad escapes',{stage:'fanout-pads',processed:0,total:shapes.length},true);
     for(const entry of shapes){if(cancelled())break;padIndex++;if(padIndex%32===0){detail('Checking SMD pads · '+padIndex+'/'+shapes.length,{stage:'fanout-pads',processed:padIndex,total:shapes.length});await pause();if(cancelled())break;}if(attached.has(entry.pad.id))continue;
       detail('Trying pad escape · '+entry.net.name+' · '+padIndex+'/'+shapes.length,{stage:'fanout-pads',netId:entry.net.id,netName:entry.net.name,processed:padIndex,total:shapes.length});
+      spatial('Inspecting pad escape · '+entry.net.name,{stage:'fanout-pad',netId:entry.net.id,netName:entry.net.name},()=>{const box=G.shapeBounds(entry.shape);return{kind:'pad',points:[[entry.pad.x,entry.pad.y,entry.shape.layer]],bounds:[box.minX,box.minY,box.maxX,box.maxY],layer:entry.shape.layer,label:'Current pad escape'};});
       const box=G.shapeBounds(entry.shape),shortSpan=Math.min(box.maxX-box.minX,box.maxY-box.minY),net=entry.net,p=entry.pad;
       let neighbours=0;for(const q of allPadShapes)if(q.shape.layer===entry.shape.layer&&q.pad.net!==p.net&&G.distanceShapes(entry.shape,q.shape)<net.width+clearance(net.id))neighbours++;
       const padLayerAllowed=traceLayers(net).includes(entry.shape.layer);
@@ -196,7 +207,7 @@ function createRamenFanout(geometry) {
       if(found)commit(found);
       await new Promise(r=>setTimeout(r,0));
     }
-    detail('Checking completed fanout clearances and connectivity',{stage:'fanout-check',addedVias:board.vias.length-initialVias},true);await pause();
+    clearSpatial('fanout-check');detail('Checking completed fanout clearances and connectivity',{stage:'fanout-check',addedVias:board.vias.length-initialVias},true);await pause();
     const validation=G.validate(board);
     if(validation.totalViolations>baseValidation.totalViolations||validation.belowNominalWidthTraceCount>baseValidation.belowNominalWidthTraceCount){
       log.push('Fanout rejected: final geometric validation found new rule violations.');

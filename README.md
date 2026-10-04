@@ -44,9 +44,12 @@ job, adjust the settings and try again.
 During routing, the activity line and job log show what the engine is working
 on, including grid preparation, fanout, path searches and result checks. The
 last-update time tells you when the engine most recently reported progress.
-Animated connection guides extend and retract between pads while the job runs;
-they show pending connections, not newly routed tracks. Turn off **Airwires**
-to hide them. They also pause when your device prefers reduced motion.
+With **Live work** enabled, the preview highlights the pads and copper being
+examined, the grid rows being prepared, and the actual search branches and
+candidate paths being tested. Trial paths are labelled separately from routed
+tracks. The view shows recent samples of the engine’s work; it does not replay
+an animation while waiting for an update. Turn off **Live work** to hide these
+highlights. Reduced-motion settings keep the highlights still.
 
 Already have a partly or fully routed DSN? Choose **Clear routing & start over**
 below the loaded filename. After you confirm, RamenRouter removes all traces

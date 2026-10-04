@@ -3,7 +3,27 @@
 function createRamenAdvisor(geo) {
   const EPS=geo.EPS||1e-8;
   const key=value=>value===null||value===undefined||value===0||value===''?null:String(value);
+  let lastActivityAt=-Infinity;
   function analyze(board,options={}) {
+    const onActivity=typeof options.onActivity==='function'?options.onActivity:null;
+    const activity=onActivity?{startedAt:Date.now(),ticks:0,emitted:false}:null;
+    function notifyActivity(event){try{onActivity(event);}catch{/* Advice display must not alter diagnostic results. */}}
+    function activityAt(shape,layer,netId,other,label,pad=null) {
+      if((activity.ticks++&63)!==0)return;
+      const now=Date.now();if(now-activity.startedAt<200||now-lastActivityAt<200)return;
+      const points=[],paths=[];
+      for(const entry of other?[{shape,layer},other]:[{shape,layer}]) {
+        const s=entry.shape,l=entry.layer;
+        if(s.type==='circle')points.push([s.cx,s.cy,l]);
+        else if(s.type==='capsule')paths.push({layer:l,points:[s.a.slice(),s.b.slice()]});
+        else if(s.points?.length){const vertices=s.points.slice(0,255).map(point=>point.slice());if(s.points.length<=255)vertices.push(s.points[0].slice());paths.push({layer:l,points:vertices});}
+        if(entry.object?.kind==='pad')points.push([entry.object.item.x,entry.object.item.y,l]);
+      }
+      if(pad)points.push([pad.x,pad.y,layer]);
+      lastActivityAt=now;activity.emitted=true;
+      notifyActivity({stage:'advising',netId,visual:{kind:other?'check':'pad',points,paths,layer,label}});
+    }
+    function finish(result){if(activity?.emitted)notifyActivity({stage:'advising',visual:null,complete:true});return result;}
     const initial=options.initialBoard||board,scale=board.units?.mmPerUnit||1;
     const nets=new Map((board.nets||[]).map(net=>[key(net.id),net]));
     const netName=id=>nets.get(key(id))?.name||String(id??'unassigned');
@@ -34,6 +54,7 @@ function createRamenAdvisor(geo) {
       if(items.length>=limit)break;
       for(const b of inputIndex.query(a.bounds,EPS)) {
         if(a.layer!==b.layer||a.object.uid>=b.object.uid||key(a.net)===null||key(b.net)===null||key(a.net)===key(b.net))continue;
+        if(onActivity)activityAt(a.shape,a.layer,a.net,b,'Reviewing imported copper contact',a.object.kind==='pad'?a.object.item:null);
         const pairKey=a.object.uid+':'+b.object.uid;
         if(shortPairs.has(pairKey)||geo.distanceShapes(a.shape,b.shape)>EPS)continue;
         shortPairs.add(pairKey);
@@ -50,9 +71,9 @@ function createRamenAdvisor(geo) {
         if(items.length>=limit)break;
       }
     }
-    if(options.includeIncomplete===false||items.length>=limit)return {items,limitedComponentLabels,units:'mm',note};
+    if(options.includeIncomplete===false||items.length>=limit)return finish({items,limitedComponentLabels,units:'mm',note});
     const connectivity=geo.connectivity(board),incomplete=connectivity.components.filter(c=>c.groups.length>1);
-    if(!incomplete.length)return {items,limitedComponentLabels,units:'mm',note};
+    if(!incomplete.length)return finish({items,limitedComponentLabels,units:'mm',note});
     const padCopper=geo.copper({pads:board.pads||[],traces:[],vias:[]}),padIndex=index(padCopper.primitives);
     const byId=new Map((board.pads||[]).map(p=>[String(p.id),p])),candidates=[];
     for(const connection of incomplete) {
@@ -67,6 +88,7 @@ function createRamenAdvisor(geo) {
         if(!allowed.length)continue;
         const blockers=new Map();let tested=0,blocked=0;
         for(const shape of allowed) {
+          if(onActivity)activityAt(shape,shape.layer,net.id,null,'Reviewing pad escape space',pad);
           const bounds=geo.shapeBounds(shape),anchor=geo.pointInShape(pad.x,pad.y,shape)?[pad.x,pad.y]:geo.nearestPointOnShape(pad.x,pad.y,shape),cx=anchor[0],cy=anchor[1];
           const radius=Math.max(Math.hypot(bounds.minX-cx,bounds.minY-cy),Math.hypot(bounds.maxX-cx,bounds.maxY-cy));
           const reach=radius+2*net.width+(net.routingClearance??net.clearance??0);
@@ -75,7 +97,9 @@ function createRamenAdvisor(geo) {
           for(let i=0;i<16;i++) {
             const angle=i*Math.PI/8,tip=[cx+reach*Math.cos(angle),cy+reach*Math.sin(angle)];
             const escape={type:'capsule',a:[cx,cy],b:tip,r:net.width/2};let hit=false;
+            if(onActivity)activityAt(escape,shape.layer,net.id,null,'Probing a straight pad escape',pad);
             for(const other of near) {
+              if(onActivity)activityAt(escape,shape.layer,net.id,other,'Checking a pad escape against nearby copper',pad);
               const required=geo.clearance(board,net,other.net),actual=geo.distanceShapes(escape,other.shape);
               if(actual>EPS&&actual+EPS>=required)continue;
               hit=true;const old=blockers.get(other.object.uid),gap=geo.distanceShapes(shape,other.shape);
@@ -122,7 +146,7 @@ function createRamenAdvisor(geo) {
         suggestion:'Inspect the highlighted connection and routing space in your PCB editor. A component move is only a candidate until the edited board has been rerouted and checked.',
         component:null,pin:null,net:netName(connection.net),nearbyComponents:[],location:point(from),area:area([from,to],Math.max(nets.get(key(connection.net))?.width||0,minimumPadding)),evidence:{source:'connectivity',groups:connection.groups.length}});
     }
-    return {items,limitedComponentLabels,units:'mm',note};
+    return finish({items,limitedComponentLabels,units:'mm',note});
   }
   return {analyze};
 }

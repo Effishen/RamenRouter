@@ -1,8 +1,29 @@
 'use strict';
 
 /** Dependency-free copper geometry. The factory is self-contained for Blob workers. */
-function createRamenGeometry() {
+function createRamenGeometry(onActivity=null) {
   const EPS = 1e-8;
+  const observesActivity=typeof onActivity==='function';
+  let lastActivityAt=-Infinity;
+  function activityContext(stage){return {stage,startedAt:Date.now(),ticks:0,emitted:false};}
+  function notifyActivity(event){try{onActivity(event);}catch{/* Display diagnostics must not affect copper checks. */}}
+  function activityAt(context,p,q,processed,total,label) {
+    if((context.ticks++&63)!==0)return;
+    const now=Date.now();if(now-context.startedAt<200||now-lastActivityAt<200)return;
+    const points=[],paths=[];
+    for(const primitive of q?[p,q]:[p]) {
+      const shape=primitive.shape,layer=primitive.layer;
+      if(shape.type==='circle')points.push([shape.cx,shape.cy,layer]);
+      else if(shape.type==='capsule')paths.push({layer,points:[shape.a.slice(),shape.b.slice()]});
+      else if(shape.points?.length){const vertices=shape.points.slice(0,255).map(point=>point.slice());if(shape.points.length<=255)vertices.push(shape.points[0].slice());paths.push({layer,points:vertices});}
+      if(primitive.object?.kind==='pad')points.push([primitive.object.item.x,primitive.object.item.y,layer]);
+    }
+    const visual={kind:q?'check':p.object?.kind||'check',points,paths,label};
+    if(!q||p.layer===q.layer)visual.layer=p.layer;
+    lastActivityAt=now;context.emitted=true;
+    notifyActivity({stage:context.stage,netId:p.net,processed,total,visual});
+  }
+  function activityDone(context){if(context?.emitted)notifyActivity({stage:context.stage,visual:null,complete:true});}
   const sq = x => x * x;
   const point = p => Array.isArray(p) ? p : [p.x, p.y];
   const distance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -175,11 +196,14 @@ function createRamenGeometry() {
     return layers;
   }
   function connectivity(board) {
+    const activity=observesActivity?activityContext('connectivity'):null;
     const {objects,primitives}=copper(board),uf=unionFind(objects.length),layers=indexing(board,primitives);
-    for(const p of primitives){if(netKey(p.net)===null)continue;for(const q of layers.get(p.layer).query(p.bounds,EPS)){
+    let primitiveCount=0;
+    for(const p of primitives){primitiveCount++;if(netKey(p.net)===null)continue;for(const q of layers.get(p.layer).query(p.bounds,EPS)){
       if(q.object.uid<=p.object.uid || netKey(q.net)!==netKey(p.net) || uf.find(q.object.uid)===uf.find(p.object.uid))continue;
+      if(observesActivity)activityAt(activity,p,q,primitiveCount,primitives.length,'Checking copper contact');
       if(distanceShapes(p.shape,q.shape)<=EPS)uf.union(p.object.uid,q.object.uid);
-    }}
+    }if(observesActivity)activityAt(activity,p,null,primitiveCount,primitives.length,'Checking connected copper');}
     const byNet=new Map();
     for(const object of objects){const key=netKey(object.net);if(key===null || !object.primitives.length)continue;
       if(!byNet.has(key))byNet.set(key,new Map());const groups=byNet.get(key),id=uf.find(object.uid);
@@ -194,6 +218,7 @@ function createRamenGeometry() {
         const used=new Set([0]),best=new Array(groups.length).fill(null);
         function groupDistance(a,b){let closest={distance:Infinity,from:a.points[0]?.slice(0,2),to:b.points[0]?.slice(0,2)};
           for(const ap of a._primitives)for(const bp of b._primitives){
+            if(observesActivity)activityAt(activity,ap,bp,undefined,undefined,'Comparing disconnected copper groups');
             const dx=Math.max(0,ap.bounds.minX-bp.bounds.maxX,bp.bounds.minX-ap.bounds.maxX),dy=Math.max(0,ap.bounds.minY-bp.bounds.maxY,bp.bounds.minY-ap.bounds.maxY);
             if(Math.hypot(dx,dy)>=closest.distance)continue;
             const pair=closestShapePoints(ap.shape,bp.shape);
@@ -210,7 +235,7 @@ function createRamenGeometry() {
       for(const group of groups)delete group._primitives;
       components.push({net:groups[0]?.net??key,groups});
     }
-    return {unrouted,components,airwires};
+    activityDone(activity);return {unrouted,components,airwires};
   }
   function pointInBoard(x,y,board) {
     const outlines=board.outlines||[];
@@ -254,6 +279,7 @@ function createRamenGeometry() {
     return true;
   }
   function validate(board) {
+    const activity=observesActivity?activityContext('checking'):null;
     const {objects,primitives}=copper(board),layers=indexing(board,primitives);
     const nets=new Map((board.nets||[]).map(n=>[netKey(n.id),n]));
     const allowedLayers=new Set((board.layers||[]).map((l,i)=>l.index??i));
@@ -266,6 +292,7 @@ function createRamenGeometry() {
     for(const p of primitives)if(!allowedLayers.has(p.layer))violation('unknown_layer',`l:${p.object.uid}:${p.layer}`,{kind:p.object.kind,index:p.object.index,layer:p.layer});
     for(const p of primitives)for(const q of layers.get(p.layer).query(p.bounds,maxClearance+EPS)){
       if(q.object.uid<=p.object.uid)continue;
+      if(observesActivity)activityAt(activity,p,q,undefined,undefined,'Checking copper clearance');
       const same=netKey(p.net)!==null&&netKey(p.net)===netKey(q.net),actual=distanceShapes(p.shape,q.shape);
       if(!same){const required=clearance(board,nets.get(netKey(p.net)),nets.get(netKey(q.net)));if(actual+EPS<required||actual<=EPS)
         violation(actual<=EPS?'short':'clearance',`c:${p.object.uid}:${q.object.uid}:${p.layer}`,{layer:p.layer,a:{kind:p.object.kind,index:p.object.index,id:p.object.id,net:p.net},b:{kind:q.object.kind,index:q.object.index,id:q.object.id,net:q.net},actual,required});
@@ -293,15 +320,19 @@ function createRamenGeometry() {
       if(net?.viaName&&v.padstack!==net.viaName)violation('via_rule',`r:v:${index}`,{index,padstack:v.padstack,required:net.viaName});
     }
     const edges=boundaryEdges(board);
+    let outlineCount=0;
     for(const p of primitives){
+      if(observesActivity)activityAt(activity,p,null,++outlineCount,primitives.length,'Checking copper against the board outline');
       if(!shapeInsideBoard(p.shape,board,edges))violation('outline',`o:${p.object.uid}:${p.layer}`,{kind:p.object.kind,index:p.object.index,id:p.object.id,net:p.net,layer:p.layer});
       for(const [index,k] of (board.keepouts||[]).entries()){
         if(k.layers&&!k.layers.includes(p.layer)||k.kind==='via'&&p.object.kind!=='via')continue;
+        if(observesActivity)activityAt(activity,p,{shape:k.shape,layer:p.layer},outlineCount,primitives.length,'Checking copper against a keepout');
         const required=k.clearance??netClearance(p.net),actual=distanceShapes(p.shape,k.shape);
         if(actual+EPS<required||actual<=EPS)violation('keepout',`k:${p.object.uid}:${index}:${p.layer}`,{kind:p.object.kind,index:p.object.index,keepout:index,net:p.net,layer:p.layer,actual,required});
       }
     }
     const count=type=>violations.filter(v=>type.includes(v.type)).length;
+    activityDone(activity);
     return {clearanceViolations:count(['clearance','short']),belowNominalWidthTraceCount:widthDeviations.length,
       viaInPadViolations:count(['via_in_pad']),outlineViolations:count(['outline']),keepoutViolations:count(['keepout']),
       totalViolations:violations.length+widthDeviations.length,violations,widthDeviations};

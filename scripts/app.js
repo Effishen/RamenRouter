@@ -37,10 +37,11 @@
   const visibleLayers = new Map();
   let layerColors = new Map();
   let layerRenderKey = '';
-  let animationFrame = null;
-  let lastAnimationPaint = 0;
-  let animationWires = [];
-  let animationNet = null;
+  let activityFrame = null;
+  let activityExpiryTimer = null;
+  let activityEventKey = '';
+  let spatialActivity = null;
+  let activitySnapshot = null;
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const canvas = $('boardCanvas');
   const ctx = canvas.getContext('2d');
@@ -79,6 +80,7 @@
     $('connectionText').textContent = value ? 'Runs entirely offline' : 'Browser engine unavailable';
     $('disconnectBanner').hidden = value;
     updateControls();
+    syncActivityVisual();
   }
 
   function number(value, maximumFractionDigits = 0) {
@@ -460,9 +462,14 @@
     $('passLabel').textContent = pass ? `ATTEMPT ${pass}` : '';
   }
 
-  function updateEngineActivity() {
+  function activityJob() {
     const job = currentState?.job;
-    const active = isActive();
+    return job && activitySnapshot?.jobId === job.id ? { ...job, ...activitySnapshot } : job;
+  }
+
+  function updateEngineActivity() {
+    const job = activityJob();
+    const active = activeStates.has(job?.state);
     $('engineActivity').hidden = !active;
     document.querySelector('.activity-panel').classList.toggle('has-live-activity', active);
     if (active) {
@@ -473,17 +480,15 @@
       $('engineActivity').classList.toggle('awaiting-update', age === null || age >= 10);
       $('engineActivityAge').title = age !== null && age >= 10 ? 'The current operation has not reported a new update yet. You can still use Stop job.' : '';
     }
-    if (animationNet !== job?.activity?.netName) {
-      animationNet = job?.activity?.netName;
-      prepareAnimationWires();
-    }
-    syncActivityAnimation();
+    receiveSpatialActivity(job);
+    syncActivityVisual();
   }
 
   function applyState(state) {
     const firstState = currentState === null;
     const previousJob = currentState?.job;
     currentState = state;
+    if (activitySnapshot && (activitySnapshot.jobId !== state.job?.id || (state.job?.activity?.sequence ?? 0) >= (activitySnapshot.activity?.sequence ?? 0) || !activeStates.has(state.job?.state))) activitySnapshot = null;
     if (state.appVersion) $('appVersion').textContent = state.appVersion;
     if (state.engineVersion) $('engineVersion').textContent = state.engineVersion;
     const job = state.job;
@@ -549,7 +554,6 @@
       board = null;
       visibleLayers.clear();
       layerRenderKey = '';
-      prepareAnimationWires();
       $('emptyBoard').hidden = true;
       draw();
     }
@@ -583,7 +587,6 @@
       if (!geometry || !Array.isArray(geometry.layers) || key !== currentBoardKey()) return;
       board = geometry;
       boardKey = key;
-      prepareAnimationWires();
       updateLayers();
       $('emptyBoard').hidden = true;
       $('canvasLabel').hidden = false;
@@ -593,7 +596,7 @@
       $('geometrySummary').textContent = parts.join(' · ');
       if (fit) fitBoard(); else draw();
       updateControls();
-      syncActivityAnimation();
+      syncActivityVisual();
     } catch (error) {
       if (!board) $('geometrySummary').textContent = 'Board geometry is not available yet';
     } finally { fetchingBoard = false; $('boardBusy').hidden = true; }
@@ -647,7 +650,7 @@
       layerColors.set(key, color);
       const row = document.createElement('label'); row.className = 'layer-row';
       const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = visibleLayers.get(key); checkbox.setAttribute('aria-label', `Show ${layer.displayName || 'layer ' + layer.id}`);
-      checkbox.addEventListener('change', () => { visibleLayers.set(key, checkbox.checked); draw(); syncActivityAnimation(); });
+      checkbox.addEventListener('change', () => { visibleLayers.set(key, checkbox.checked); draw(); syncActivityVisual(); });
       const swatch = document.createElement('span'); swatch.className = 'layer-color'; swatch.style.background = color;
       const name = document.createElement('span'); name.className = 'layer-name'; name.textContent = layer.displayName || `Layer ${layer.id}`; name.title = name.textContent;
       const index = document.createElement('small'); index.textContent = String(i + 1).padStart(2, '0');
@@ -698,70 +701,140 @@
   function draw() {
     if (drawQueued) return;
     drawQueued = true;
-    requestAnimationFrame(() => { drawQueued = false; paintBoard(); if (animationFrame !== null) paintActivity(performance.now()); });
+    requestAnimationFrame(() => { drawQueued = false; paintBoard(); paintActivity(); });
   }
 
-  function prepareAnimationWires() {
-    // A small, evenly spaced sample keeps animation independent of board size.
-    // These are missing connections, never provisional routed copper.
-    const wires = board?.airwires || [];
-    const matching = animationNet ? wires.filter(wire => wire.net === animationNet) : [];
-    const candidates = matching.length ? matching : wires;
-    const count = Math.min(18, candidates.length);
-    animationWires = [];
-    for (let i = 0; i < count; i++) {
-      const wire = candidates[Math.floor(i * candidates.length / count)];
-      const points = (Array.isArray(wire) ? wire : wire.points)?.filter(point => Array.isArray(point) && point.length >= 2 && Number.isFinite(point[0]) && Number.isFinite(point[1]));
-      if (!points || points.length < 2) continue;
-      const lengths = points.slice(1).map((point, j) => Math.hypot(point[0] - points[j][0], point[1] - points[j][1]));
-      const length = lengths.reduce((sum, value) => sum + value, 0);
-      if (length > 0) animationWires.push({ points, lengths, length });
-    }
+  function activityPath(item) {
+    if (!item || !Array.isArray(item.points)) return null;
+    const points = item.points.slice(0, 512);
+    if (!points.every(point => Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1]))) return null;
+    if (points.length < 2) return null;
+    const lengths = points.slice(1).map((point, i) => Math.hypot(point[0] - points[i][0], point[1] - points[i][1]));
+    return { layer: item.layer, points, lengths, length: lengths.reduce((sum, value) => sum + value, 0) };
   }
 
-  function shouldAnimateConnections() {
-    const job = currentState?.job;
-    return connected && job?.state === 'running' && !!board && animationWires.length > 0 && $('showAirwires').checked && [...visibleLayers.values()].some(Boolean) && !reducedMotion.matches && !document.hidden;
-  }
-
-  function syncActivityAnimation() {
-    const enabled = shouldAnimateConnections();
-    $('connectionActivityLabel').hidden = !enabled;
-    if (!enabled) {
-      if (animationFrame !== null) cancelAnimationFrame(animationFrame);
-      animationFrame = null;
-      activityCtx.clearRect(0, 0, view.width, view.height);
-      return;
-    }
-    if (animationFrame === null) { lastAnimationPaint = 0; animationFrame = requestAnimationFrame(animateConnections); }
-  }
-
-  function animateConnections(now) {
-    if (!shouldAnimateConnections()) { syncActivityAnimation(); return; }
-    if (now - lastAnimationPaint >= 1000 / 24) { lastAnimationPaint = now; paintActivity(now); }
-    animationFrame = requestAnimationFrame(animateConnections);
-  }
-
-  function paintActivity(now) {
-    activityCtx.clearRect(0, 0, view.width, view.height);
-    activityCtx.lineCap = 'round'; activityCtx.lineJoin = 'round';
-    activityCtx.strokeStyle = '#94edcd'; activityCtx.fillStyle = '#cdf7df'; activityCtx.lineWidth = 1.7;
-    for (const [index, wire] of animationWires.entries()) {
-      const cycle = ((now + index * 137) % 2600) / 2600;
-      const fraction = (1 - Math.cos(cycle * Math.PI * 2)) / 2;
-      let remaining = wire.length * fraction;
-      let tip = worldToScreen(...wire.points[0]);
-      activityCtx.beginPath(); activityCtx.moveTo(...tip);
-      for (let i = 0; i < wire.lengths.length && remaining > 0; i++) {
-        const portion = wire.lengths[i] ? Math.min(1, remaining / wire.lengths[i]) : 1;
-        const a = wire.points[i], b = wire.points[i + 1];
-        tip = worldToScreen(a[0] + (b[0] - a[0]) * portion, a[1] + (b[1] - a[1]) * portion);
-        activityCtx.lineTo(...tip); remaining -= wire.lengths[i];
+  function receiveSpatialActivity(job) {
+    const report = job?.activity;
+    const key = `${job?.id || ''}|${report?.sequence ?? report?.updatedAt ?? ''}`;
+    if (key === activityEventKey) return;
+    activityEventKey = key;
+    const previous = spatialActivity;
+    spatialActivity = null;
+    const visual = report?.visual;
+    if (!visual || !['pad', 'via', 'grid', 'search', 'candidate', 'trace', 'check'].includes(visual.kind)) return;
+    const paths = (Array.isArray(visual.paths) ? visual.paths : []).slice(0, 32).map(activityPath).filter(Boolean);
+    const points = (Array.isArray(visual.points) ? visual.points : []).filter(point => Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1])).slice(0, 512);
+    const bounds = Array.isArray(visual.bounds) && visual.bounds.length === 4 && visual.bounds.every(Number.isFinite) ? visual.bounds : null;
+    if (!paths.length && !points.length && !bounds) return;
+    const searchId = visual.searchId ?? report.searchId;
+    const reportedAt = Number.isFinite(report.updatedAt) ? report.updatedAt : Date.now();
+    const animated = visual.kind === 'search' || visual.kind === 'candidate';
+    spatialActivity = { kind: visual.kind, label: visual.label, layer: visual.layer, points, paths, bounds, searchId, receivedAt: performance.now(), expiresAt: reportedAt + 2000, animated };
+    // Only shared, engine-reported segments can retract into a new search branch.
+    // A truncated or unrelated branch is revealed separately; no link is invented.
+    if (visual.kind === 'search' && previous?.kind === 'search' && searchId !== undefined && previous.searchId === searchId) {
+      for (const [i, path] of paths.entries()) {
+        const before = previous.paths[i];
+        if (!before || layerKey(before.layer) !== layerKey(path.layer)) continue;
+        let shared = 0;
+        while (shared < Math.min(before.points.length, path.points.length) && Math.abs(before.points[shared][0] - path.points[shared][0]) < 1e-8 && Math.abs(before.points[shared][1] - path.points[shared][1]) < 1e-8) shared++;
+        if (shared) path.transition = { before: { layer: before.layer, points: before.points, lengths: before.lengths, length: before.length }, sharedLength: path.lengths.slice(0, shared - 1).reduce((sum, value) => sum + value, 0) };
       }
-      activityCtx.globalAlpha = .78; activityCtx.stroke();
-      if (fraction > .02) { activityCtx.globalAlpha = .9; activityCtx.beginPath(); activityCtx.arc(tip[0], tip[1], 2.2, 0, Math.PI * 2); activityCtx.fill(); }
     }
-    activityCtx.globalAlpha = 1;
+  }
+
+  function spatialLayerVisible(layer) {
+    return layer === undefined || layer === null ? [...visibleLayers.values()].some(Boolean) : layerVisible(layer);
+  }
+
+  function activityEnabled() {
+    const job = activityJob();
+    return connected && activeStates.has(job?.state) && job?.state !== 'stopping' && $('showLiveWork').checked && !document.hidden;
+  }
+
+  function spatialActivityVisible() {
+    return activityEnabled() && !!board && !!spatialActivity && Date.now() < spatialActivity.expiresAt;
+  }
+
+  function stopActivityFrames() {
+    if (activityFrame !== null) cancelAnimationFrame(activityFrame);
+    if (activityExpiryTimer !== null) clearTimeout(activityExpiryTimer);
+    activityFrame = activityExpiryTimer = null;
+  }
+
+  function updateSpatialCaption() {
+    const enabled = activityEnabled();
+    $('connectionActivityLabel').hidden = !enabled;
+    if (!enabled) return;
+    const visible = spatialActivityVisible();
+    const names = { pad: 'Examining pad', via: 'Examining via', grid: 'Preparing clearance grid', search: 'Testing search branches', candidate: 'Unverified candidate', trace: 'Examining trace', check: 'Checking geometry' };
+    const details = { pad: 'Actual pad location', via: 'Actual via location', grid: 'Current grid area', search: 'Actual explored paths · not routed copper', candidate: 'Proposed path under evaluation', trace: 'Engine-reported trace', check: 'Current rule-check area' };
+    $('activityVisualTitle').textContent = visible ? names[spatialActivity.kind] : (phaseName(activityJob()?.phase) || 'Engine activity');
+    $('activityVisualDetail').textContent = visible ? (spatialActivity.label || details[spatialActivity.kind]) : (!board ? 'Waiting for board preview' : (spatialActivity ? 'Waiting for next location update' : 'No location reported for this stage'));
+    $('connectionActivityLabel').dataset.kind = visible ? spatialActivity.kind : 'phase';
+  }
+
+  function syncActivityVisual() {
+    stopActivityFrames();
+    updateSpatialCaption();
+    paintActivity();
+    if (!spatialActivityVisible()) return;
+    activityExpiryTimer = setTimeout(() => { activityExpiryTimer = null; syncActivityVisual(); }, Math.max(1, spatialActivity.expiresAt - Date.now() + 5));
+    if (spatialActivity.animated && !reducedMotion.matches && performance.now() - spatialActivity.receivedAt < 120) activityFrame = requestAnimationFrame(animateReportedPath);
+  }
+
+  function animateReportedPath() {
+    activityFrame = null;
+    if (!spatialActivityVisible()) { syncActivityVisual(); return; }
+    paintActivity();
+    if (!reducedMotion.matches && performance.now() - spatialActivity.receivedAt < 120) activityFrame = requestAnimationFrame(animateReportedPath);
+  }
+
+  function strokeActivityPath(path, distance) {
+    if (!path.points.length) return;
+    let remaining = Math.max(0, distance);
+    activityCtx.beginPath(); activityCtx.moveTo(...worldToScreen(...path.points[0]));
+    for (let i = 0; i < path.lengths.length && remaining > 0; i++) {
+      const fraction = path.lengths[i] ? Math.min(1, remaining / path.lengths[i]) : 1;
+      const a = path.points[i], b = path.points[i + 1];
+      activityCtx.lineTo(...worldToScreen(a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction));
+      remaining -= path.lengths[i];
+    }
+    activityCtx.stroke();
+  }
+
+  function paintActivity() {
+    activityCtx.clearRect(0, 0, view.width, view.height);
+    if (!spatialActivityVisible()) return;
+    const visual = spatialActivity;
+    const colors = { pad: '#9bf0d6', via: '#dfb0f4', grid: '#7fd0ed', search: '#f5cb87', candidate: '#ffbe7d', trace: '#a2efd0', check: '#ebdb97' };
+    const color = colors[visual.kind];
+    const fraction = reducedMotion.matches || !visual.animated ? 1 : Math.min(1, Math.max(0, (performance.now() - visual.receivedAt) / 120));
+    activityCtx.save(); activityCtx.lineCap = 'round'; activityCtx.lineJoin = 'round'; activityCtx.strokeStyle = color; activityCtx.fillStyle = color; activityCtx.lineWidth = 2;
+    if (visual.bounds && spatialLayerVisible(visual.layer)) {
+      const [x0, y0] = worldToScreen(visual.bounds[0], visual.bounds[3]);
+      const [x1, y1] = worldToScreen(visual.bounds[2], visual.bounds[1]);
+      activityCtx.globalAlpha = .14; activityCtx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      activityCtx.globalAlpha = .85; activityCtx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    }
+    activityCtx.globalAlpha = .95;
+    if (visual.kind === 'candidate') activityCtx.setLineDash([6, 4]);
+    else if (visual.kind === 'search') activityCtx.setLineDash([3, 3]);
+    for (const path of visual.paths) {
+      if (!spatialLayerVisible(path.layer ?? visual.layer)) continue;
+      if (path.transition && fraction < .5) strokeActivityPath(path.transition.before, path.transition.sharedLength + (path.transition.before.length - path.transition.sharedLength) * (1 - fraction * 2));
+      else if (path.transition) strokeActivityPath(path, path.transition.sharedLength + (path.length - path.transition.sharedLength) * Math.max(0, (fraction - .5) * 2));
+      else strokeActivityPath(path, path.length * fraction);
+    }
+    activityCtx.setLineDash([]);
+    for (const point of visual.points) {
+      if (!spatialLayerVisible(point[2] ?? visual.layer)) continue;
+      const [x, y] = worldToScreen(point[0], point[1]);
+      activityCtx.beginPath(); activityCtx.arc(x, y, visual.kind === 'search' ? 2.5 : 7, 0, Math.PI * 2);
+      if (visual.kind === 'search') { activityCtx.globalAlpha = .65; activityCtx.fill(); }
+      else { activityCtx.globalAlpha = .95; activityCtx.stroke(); activityCtx.beginPath(); activityCtx.moveTo(x - 3, y); activityCtx.lineTo(x + 3, y); activityCtx.moveTo(x, y - 3); activityCtx.lineTo(x, y + 3); activityCtx.stroke(); }
+    }
+    activityCtx.restore();
   }
 
   function path(points, closed = false) {
@@ -1171,11 +1244,12 @@
   $('zoomIn').addEventListener('click', () => zoomBy(1.25));
   $('zoomOut').addEventListener('click', () => zoomBy(.8));
   $('showPads').addEventListener('change', draw);
-  $('showAirwires').addEventListener('change', () => { draw(); syncActivityAnimation(); });
-  reducedMotion.addEventListener('change', syncActivityAnimation);
-  document.addEventListener('visibilitychange', syncActivityAnimation);
-  window.addEventListener('pagehide', () => { if (animationFrame !== null) cancelAnimationFrame(animationFrame); animationFrame = null; });
-  window.addEventListener('pageshow', syncActivityAnimation);
+  $('showAirwires').addEventListener('change', draw);
+  $('showLiveWork').addEventListener('change', syncActivityVisual);
+  reducedMotion.addEventListener('change', syncActivityVisual);
+  document.addEventListener('visibilitychange', syncActivityVisual);
+  window.addEventListener('pagehide', stopActivityFrames);
+  window.addEventListener('pageshow', syncActivityVisual);
   canvas.addEventListener('wheel', event => { if (!board) return; event.preventDefault(); const rect = canvas.getBoundingClientRect(); zoomBy(Math.exp(-event.deltaY * .0018), event.clientX - rect.left, event.clientY - rect.top); }, { passive: false });
   canvas.addEventListener('pointerdown', event => { if (!board || event.button !== 0) return; view.dragging = true; view.pointerX = event.clientX; view.pointerY = event.clientY; canvas.setPointerCapture(event.pointerId); canvas.classList.add('dragging'); });
   canvas.addEventListener('pointermove', event => {
@@ -1190,6 +1264,13 @@
   document.addEventListener('keydown', event => {
     if (event.target.matches('input,textarea,select') || $('aboutDialog').open || $('clearRoutingDialog').open || $('netLayersDialog').open || event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.key.toLowerCase() === 'f') { event.preventDefault(); fitBoard(); }
+  });
+  if (typeof nativeEngine?.subscribeActivity === 'function') nativeEngine.subscribeActivity(event => {
+    if (!currentState?.job || event.jobId !== currentState.job.id) return;
+    // Fast work reports update only this overlay and status; full snapshots stay
+    // on the normal polling path so large board geometry is not copied here.
+    activitySnapshot = event;
+    updateEngineActivity();
   });
   restoreSettings();
   new ResizeObserver(resizeCanvas).observe($('canvasWrap'));

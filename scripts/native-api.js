@@ -2,12 +2,17 @@
 'use strict';
 (() => {
   const active = new Set(['inspecting','starting','running','stopping','clearing','updating_rules']);
-  const subscribers = new Set();
+  const subscribers = new Set(), activitySubscribers = new Set();
+  let activitySequence=0;
   let job = null, worker = null, workerUrl = null, inputText = null;
   let board = null, preview = null, exports = null, bestChecked = null, clearTransaction = null, ruleTransaction = null, importedNetLayers = null, serial = 0, timer = null, watchdog = null;
   const logs = [];
-  const base = {appVersion:'0.2.10',engineVersion:'Ramen JS 0.2.10',fanoutVersion:'Ramen SMD escape'};
-  function notify() { for (const fn of subscribers) { try { fn(state()); } catch (_) {} } }
+  const base = {appVersion:'0.2.11',engineVersion:'Ramen JS 0.2.11',fanoutVersion:'Ramen SMD escape'};
+  function notifyActivity() {
+    const update={jobId:job?.id,state:job?.state,phase:job?.phase,activity:job?.activity,lastEngineUpdateAt:job?.lastEngineUpdateAt};
+    for(const fn of activitySubscribers){try{fn(update);}catch(_){}}
+  }
+  function notify() { notifyActivity(); for (const fn of subscribers) { try { fn(state()); } catch (_) {} } }
   function log(message) {
     logs.push(new Date().toLocaleTimeString() + '  ' + String(message));
     if (logs.length > 20000) logs.splice(0,logs.length-20000);
@@ -15,6 +20,7 @@
   function elapsed() { return job ? Math.max(0,((job.endedAt||Date.now())-job.startedAt)/1000) : 0; }
   function state() { return {...base,job:job?{...job,elapsedSeconds:elapsed(),log:logs.slice(-180)}:null}; }
   function kill() {
+    if(job?.activity)job.activity={...job.activity,visual:null,sequence:++activitySequence};
     if(worker) {worker.onmessage=null;worker.onerror=null;worker.terminate();} worker=null;
     if(workerUrl) URL.revokeObjectURL(workerUrl); workerUrl=null;
     clearTimeout(timer); timer=null; clearTimeout(watchdog); watchdog=null;
@@ -92,12 +98,40 @@
     return s;
   }
   function workerMain() {
-    const dsn=createRamenDSN(), geo=createRamenGeometry(), advisor=createRamenAdvisor(geo), router=createRamenRouter(geo,createRamenOptimizer(geo),createRamenFanout(geo));
-    let cancelled=false,deadline=Infinity;
-    const send=(data)=>self.postMessage(data);
+    let cancelled=false,deadline=Infinity,activityScale=1,lastSpatialAt=-Infinity;
+    let activityNets=new Map();
+    function visualInMm(visual) {
+      if(!visual||!['pad','via','grid','search','candidate','trace','check'].includes(visual.kind))return null;
+      const point=p=>Array.isArray(p)&&p.length>=2&&Number.isFinite(p[0])&&Number.isFinite(p[1]);
+      const result={kind:visual.kind,units:'mm',label:String(visual.label||'').slice(0,160)};
+      if(Number.isInteger(visual.layer))result.layer=visual.layer;
+      if(visual.searchId!==undefined)result.searchId=visual.searchId;
+      result.points=(visual.points||[]).slice(0,64).filter(point).map(p=>[p[0]*activityScale,p[1]*activityScale,...(Number.isInteger(p[2])?[p[2]]:[])]);
+      let remaining=512;result.paths=[];
+      for(const path of (visual.paths||[]).slice(0,32)) {
+        if(remaining<2)break;
+        const points=(path.points||[]).slice(0,remaining);
+        if(points.length<2||!points.every(point)||!Number.isInteger(path.layer))continue;
+        result.paths.push({layer:path.layer,points:points.map(p=>[p[0]*activityScale,p[1]*activityScale])});remaining-=points.length;
+      }
+      if(Array.isArray(visual.bounds)&&visual.bounds.length===4&&visual.bounds.every(Number.isFinite))result.bounds=visual.bounds.map(n=>n*activityScale);
+      return result;
+    }
+    const send=data=>{
+      if(data.type==='activity'&&data.activity?.visual){const now=Date.now();if(now-lastSpatialAt<150)return;lastSpatialAt=now;}
+      if(data.activity)data={...data,activity:{...data.activity,visual:visualInMm(data.activity.visual)}};
+      self.postMessage(data);
+    };
+    function checkedActivity(activity) {
+      const phase=activity.stage==='advising'?'advising':'checking';
+      const netName=activityNets.get(activity.netId);
+      const label=activity.visual?.label||(phase==='advising'?'Reviewing placement advice':'Checking board geometry');
+      send({type:'activity',phase,message:label+(netName?' · '+netName:''),activity:{...activity,netName}});
+    }
+    const dsn=createRamenDSN(), geo=createRamenGeometry(checkedActivity), advisor=createRamenAdvisor(geo), router=createRamenRouter(geo,createRamenOptimizer(geo),createRamenFanout(geo));
     const stage=(phase,message,activity={},writeLog=true)=>send({type:'progress',phase,message,activity,log:writeLog});
     function placementAdvice(b,initialBoard,includeIncomplete) {
-      try {return advisor.analyze(b,{initialBoard,includeIncomplete});}
+      try {return advisor.analyze(b,{initialBoard,includeIncomplete,onActivity:checkedActivity});}
       catch(error) {send({type:'progress',message:'Placement advice unavailable: '+(error.message||String(error))});return {items:[]};}
     }
     function restrictedSmdNets(b) {
@@ -146,7 +180,7 @@
       const advice=placementAdvice(result,initialBoard,includeIncomplete);
       stage('exporting','Preparing the checked preview and downloadable results.',{},writeLog);
       return {board:result,preview:geometry(result,prepared?.connection),stats:finalStats,advice,fromInput,
-        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.10',settings:options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
+        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.11',settings:options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
     }
     self.onmessage=async event=>{
       const m=event.data;
@@ -156,6 +190,7 @@
         cancelled=false;deadline=Date.now()+(m.options?.timeoutMinutes||30)*60000;
         stage('reading','Reading the DSN board and its routing rules.');
         const b=dsn.parse(m.text,m.name);
+        activityScale=b.units.mmPerUnit;activityNets=new Map(b.nets.map(net=>[net.id,net.name]));
         stage('checking','Loaded '+b.nets.length+' nets, '+b.pads.length+' pads and '+b.layers.length+' copper layers. Checking the input board.');
         if(m.type==='clear') {
           // No host state changes until parsing, geometry checks, preview and
@@ -190,6 +225,7 @@
         let lastPreview=0;
         const out=await router.route(b,m.options,message=>{
           if(typeof message==='string') {send({type:'progress',message});return;}
+          if(message.type==='activity'){send(message);return;}
           if(message.type==='checkpoint') {
             const fromInput=message.stats.traceCount===initial.traceCount&&message.stats.viaCount===initial.viaCount&&message.stats.unrouted===initial.unrouted;
             send({type:'checkpoint',...checkedResult(message.board,b,m.options,m.name,initial,message.stats,fromInput),phase:message.phase,pass:message.pass});return;
@@ -221,7 +257,7 @@
     const source='"use strict";\n'+[createRamenDSN,createRamenGeometry,createRamenOptimizer,createRamenFanout,createRamenRouter,createRamenAdvisor,workerMain].map(fn=>fn.toString()).join('\n')+'\nworkerMain();';
     job={id:String(id),name:job?.name||'board.dsn',state:clearing?'clearing':editingRules?'updating_rules':type==='inspect'?'inspecting':'starting',phase:clearing?'clearing':editingRules?'updating_rules':'loading',startedAt:Date.now(),settings:options,stats:transactional?saved.job.stats:null,initialStats:null,error:null,clearError:null,ruleError:null,hasOutput:false,routingCleared,layerRulesChanged,layerRuleSummary,routingSummary:transactional?routingSummary(board):null,suggestions:{},advice:{items:[]},bestResult:{available:false},revision:0,pass:0};
     job.lastEngineUpdateAt=null;
-    job.activity={message:'Starting browser worker…',phase:job.phase,updatedAt:job.startedAt,source:'host'};
+    job.activity={message:'Starting browser worker…',phase:job.phase,updatedAt:job.startedAt,source:'host',visual:null,sequence:++activitySequence};
     try {
       workerUrl=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
       worker=new Worker(workerUrl);
@@ -234,7 +270,9 @@
       if(id!==serial||!job||!active.has(job.state))return;
       const m=e.data;
       job.lastEngineUpdateAt=Date.now();
-      if(m.message)job.activity={...(m.activity||{}),message:String(m.message),phase:m.phase||job.phase,updatedAt:job.lastEngineUpdateAt,source:'engine'};
+      if(m.type==='activity'||m.message)job.activity={...(m.activity||{}),visual:m.activity?.visual||null,message:String(m.message||m.activity?.visual?.label||'Working on the board'),phase:m.phase||job.phase,updatedAt:job.lastEngineUpdateAt,source:'engine',sequence:++activitySequence};
+      // Spatial updates are small and independent of logs, statistics and board previews.
+      if(m.type==='activity'){if(m.phase&&!transactional)job.phase=m.phase;notifyActivity();return;}
       if(m.type==='progress'&&transactional){if(m.message&&m.log!==false)log(m.message);notify();return;}
       if(editingRules) {
         if(m.type==='error') {restoreBeforeRules('Layer rules could not be updated: '+m.error,m.error);return;}
@@ -270,7 +308,7 @@
       if(m.type==='checkpoint') {
         rememberChecked(m);
         job.phase=m.phase||'routing';
-        job.activity={message:'Saved checked result: '+m.stats.unrouted+' connections remaining.',phase:m.phase||'routing',updatedAt:job.lastEngineUpdateAt,source:'engine'};
+        job.activity={message:'Saved checked result: '+m.stats.unrouted+' connections remaining.',phase:m.phase||'routing',updatedAt:job.lastEngineUpdateAt,source:'engine',visual:null,sequence:++activitySequence};
         if(!job.lastCheckpointLogAt||Date.now()-job.lastCheckpointLogAt>=5000){log(job.activity.message);job.lastCheckpointLogAt=Date.now();}
         notify();return;
       }
@@ -390,6 +428,6 @@
     const {blob,filename}=getDownload(type),url=URL.createObjectURL(blob),a=document.createElement('a');
     a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);return filename;
   }
-  globalThis.RamenNative={request,download,subscribe(fn){subscribers.add(fn);return()=>subscribers.delete(fn);}};
+  globalThis.RamenNative={request,download,subscribeActivity(fn){activitySubscribers.add(fn);return()=>activitySubscribers.delete(fn);},subscribe(fn){subscribers.add(fn);return()=>subscribers.delete(fn);}};
   window.addEventListener('beforeunload',event=>{if(job&&active.has(job.state)){event.preventDefault();event.returnValue='';}});
 })();
