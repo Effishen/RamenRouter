@@ -54,6 +54,10 @@ may use. You can choose one layer or several. **Reset** restores the layer
 rule from your imported file. These choices affect routing; the preview's
 **Visible layers** controls only change what you see.
 
+Recognised EasyEDA layer IDs are shown as **Top Layer**, **Inner1**,
+**Inner2**, and **Bottom Layer**, with their original numbers in brackets.
+They appear from top to bottom in the layer table and layer list.
+
 Use a layer’s header checkbox to check or uncheck every net shown in the
 table. With no search, this changes all nets. With a search, it changes only
 matching nets; the other nets keep their selections.

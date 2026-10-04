@@ -580,21 +580,34 @@
   function layerVisible(value) { return visibleLayers.get(layerKey(value)) !== false; }
   function layerColor(value) { return layerColors.get(layerKey(value)) || '#bdc5a5'; }
 
+  function displayLayers(layers) {
+    const items = layers.map((layer, colorIndex) => ({ ...layer, colorIndex, displayName: layer.name }));
+    // EasyEDA Standard exports this distinctive ID sequence, rather than
+    // physical stack order. Keep raw names and IDs for every routing action.
+    const easyeda = items.length > 2 && items.every((layer, i) => String(layer.name) === String(i < 2 ? i + 1 : i + 19));
+    if (!easyeda) return items;
+    for (const layer of items) {
+      const id = Number(layer.name);
+      layer.displayName = `${id === 1 ? 'Top Layer' : id === 2 ? 'Bottom Layer' : 'Inner' + (id - 20)} (${layer.name})`;
+    }
+    return [items[0], ...items.slice(2), items[1]];
+  }
+
   function updateLayers() {
-    const layers = board?.layers || [];
+    const layers = displayLayers(board?.layers || []);
     const list = $('layersList');
     list.replaceChildren();
     layerColors = new Map();
     for (const [i, layer] of layers.entries()) {
       const key = layerKey(layer.id);
       if (!visibleLayers.has(key)) visibleLayers.set(key, true);
-      const color = palette[i % palette.length];
+      const color = palette[layer.colorIndex % palette.length];
       layerColors.set(key, color);
       const row = document.createElement('label'); row.className = 'layer-row';
-      const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = visibleLayers.get(key); checkbox.setAttribute('aria-label', `Show ${layer.name || 'layer ' + layer.id}`);
+      const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = visibleLayers.get(key); checkbox.setAttribute('aria-label', `Show ${layer.displayName || 'layer ' + layer.id}`);
       checkbox.addEventListener('change', () => { visibleLayers.set(key, checkbox.checked); draw(); });
       const swatch = document.createElement('span'); swatch.className = 'layer-color'; swatch.style.background = color;
-      const name = document.createElement('span'); name.className = 'layer-name'; name.textContent = layer.name || `Layer ${layer.id}`; name.title = name.textContent;
+      const name = document.createElement('span'); name.className = 'layer-name'; name.textContent = layer.displayName || `Layer ${layer.id}`; name.title = name.textContent;
       const index = document.createElement('small'); index.textContent = String(i + 1).padStart(2, '0');
       row.append(checkbox, swatch, name, index); list.append(row);
     }
@@ -873,9 +886,9 @@
     for (const layer of netLayersData.layers) {
       const th = document.createElement('th'); th.scope = 'col';
       const label = document.createElement('label'); label.className = 'net-layer-column';
-      const name = document.createElement('span'); name.textContent = layer.name;
+      const name = document.createElement('span'); name.textContent = layer.displayName;
       const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.layerId = String(layer.id);
-      checkbox.setAttribute('aria-label', `${layer.name}: all shown nets`);
+      checkbox.setAttribute('aria-label', `${layer.displayName}: all shown nets`);
       checkbox.setAttribute('aria-describedby', 'netLayerBulkHelp');
       checkbox.addEventListener('change', () => {
         if (!connected || busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
@@ -900,7 +913,7 @@
       for (const layer of netLayersData.layers) {
         const cell = document.createElement('td');
         const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.layerId = String(layer.id);
-        checkbox.setAttribute('aria-label', `${net.name}: ${layer.name}`);
+        checkbox.setAttribute('aria-label', `${net.name}: ${layer.displayName}`);
         checkbox.addEventListener('change', () => {
           if (busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
           const selected = netLayerDrafts.get(net.id);
@@ -930,7 +943,7 @@
     try {
       const data = await api('/api/net-layers');
       if (currentState?.job?.id !== jobId || isActive() || data.jobId !== jobId) return;
-      netLayersData = { ...data, nets: [...data.nets].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true, sensitivity: 'base' })) };
+      netLayersData = { ...data, layers: displayLayers(data.layers), nets: [...data.nets].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true, sensitivity: 'base' })) };
       netLayerDrafts = new Map(netLayersData.nets.map(net => [net.id, new Set(net.allowedLayers)]));
       $('netLayerSearch').value = '';
       renderNetLayerRows();
