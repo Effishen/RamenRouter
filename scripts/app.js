@@ -804,7 +804,23 @@
 
   function filteredNetLayerNets() {
     const query = $('netLayerSearch').value.trim().toLocaleLowerCase();
-    return netLayersData.nets.filter(net => String(net.name).toLocaleLowerCase().includes(query));
+    if (!query.includes('*')) return netLayersData.nets.filter(net => String(net.name).toLocaleLowerCase().includes(query));
+    const [first, ...parts] = query.split('*'), last = parts.pop();
+    // Match literal pieces in order, reserving the suffix so pieces cannot
+    // overlap. This keeps punctuation literal and avoids regex backtracking.
+    return netLayersData.nets.filter(net => {
+      const name = String(net.name).toLocaleLowerCase();
+      if (!name.startsWith(first) || !name.endsWith(last)) return false;
+      let position = first.length;
+      const end = name.length - last.length;
+      if (position > end) return false;
+      for (const part of parts) {
+        position = name.indexOf(part, position);
+        if (position < 0 || position + part.length > end) return false;
+        position += part.length;
+      }
+      return true;
+    });
   }
 
   function updateNetLayerDraftStatus() {

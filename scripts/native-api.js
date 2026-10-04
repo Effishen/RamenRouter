@@ -6,7 +6,7 @@
   let job = null, worker = null, workerUrl = null, inputText = null;
   let board = null, preview = null, exports = null, bestChecked = null, clearTransaction = null, ruleTransaction = null, importedNetLayers = null, serial = 0, timer = null, watchdog = null;
   const logs = [];
-  const base = {appVersion:'0.2.7',engineVersion:'Ramen JS 0.2.7',fanoutVersion:'Ramen SMD escape'};
+  const base = {appVersion:'0.2.8',engineVersion:'Ramen JS 0.2.8',fanoutVersion:'Ramen SMD escape'};
   function notify() { for (const fn of subscribers) { try { fn(state()); } catch (_) {} } }
   function log(message) {
     logs.push(new Date().toLocaleTimeString() + '  ' + String(message));
@@ -141,7 +141,7 @@
     function checkedResult(result,initialBoard,options,name,initialStats,finalStats,fromInput=false,includeIncomplete=!options.fanoutOnly) {
       const report=geo.validate(result),advice=placementAdvice(result,initialBoard,includeIncomplete);
       return {board:result,preview:geometry(result),stats:finalStats,advice,fromInput,
-        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.7',settings:options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
+        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.8',settings:options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
     }
     self.onmessage=async event=>{
       const m=event.data;

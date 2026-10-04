@@ -25,7 +25,7 @@
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M5 20h30c-1 10-7 15-15 15S6 30 5 20Zm6 15h18M10 7v5h8v8m9-16v8h-4v8M4 15h13M25 15h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="5" r="2" fill="currentColor"/><circle cx="27" cy="3" r="2" fill="currentColor"/></svg>
       <span>Ramen<span class="brand-light">Router</span><span class="brand-caption">PCB ROUTING WORKBENCH</span></span>
     </div>
-    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.7</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
+    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.8</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
     <div class="connection" id="connection"><span class="status-dot"></span><span id="connectionText">Starting browser engine</span></div>
     <button class="icon-button help-button" id="helpButton" title="About this workbench" aria-label="About this workbench">?</button>
   </header>
@@ -134,7 +134,7 @@
       <button id="downloadSes" class="export-button" disabled><span class="export-file-type">SES</span><span><strong>Routing session</strong><small>Import into your PCB editor</small></span><span class="download-arrow" aria-hidden="true">↓</span></button>
       <div class="secondary-downloads"><button id="downloadDsn" class="text-button" disabled>Routed DSN <span aria-hidden="true">↓</span></button><button id="downloadChecks" class="text-button" disabled>Check report <span aria-hidden="true">↓</span></button><button id="downloadLog" class="text-button" disabled>Engine log <span aria-hidden="true">↓</span></button></div>
       <p class="export-note">Check clearances, connectivity and design rules in your PCB editor before manufacturing.</p>
-      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.7</span><span>Independent browser engine · GPL-3.0</span></div>
+      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.8</span><span>Independent browser engine · GPL-3.0</span></div>
       </div>
     </aside>
   </main>
@@ -145,7 +145,8 @@
     <p id="netLayersDescription">Choose the copper layers each net may use for traces. Your selection replaces that net’s imported layer rule. Reset restores the imported rule.</p>
     <p class="net-layers-physical-note">Pads and through vias keep their physical layer spans. Selecting a layer here does not change the board’s construction.</p>
     <p class="net-layers-apply-note" id="netLayersApplyNote"><strong>Save your current result first.</strong> Applying replaces the current routed result with the input board. Imported copper stays. Start routing when you are ready.</p>
-    <div class="net-layers-tools"><label for="netLayerSearch">Find a net<input id="netLayerSearch" type="search" placeholder="Search net names" autocomplete="off" autofocus></label><button id="resetAllNetLayers" type="button">Reset all to imported</button></div>
+    <div class="net-layers-tools"><label for="netLayerSearch">Find a net<input id="netLayerSearch" type="search" placeholder="Search net names or USB*" aria-describedby="netLayerSearchHelp" autocomplete="off" autofocus></label><button id="resetAllNetLayers" type="button">Reset all to imported</button></div>
+    <p class="net-layer-bulk-help" id="netLayerSearchHelp">Use <strong>*</strong> for any number of characters: <strong>USB*</strong> starts with USB, <strong>*CLK</strong> ends with CLK, <strong>*CLK*</strong> contains CLK. Plain text finds any part of a name.</p>
     <p class="net-layer-bulk-help" id="netLayerBulkHelp">Each layer’s header checkbox changes all shown nets. Filter by name to change only matching nets.</p>
     <p class="net-layer-count" id="netLayerCount" role="status" aria-live="polite"></p>
     <div class="net-layer-table-scroll" tabindex="0" role="region" aria-label="Net routing layer selections, scroll for more nets or layers"><table class="net-layer-table"><caption class="visually-hidden">Allowed trace layers for each net</caption><thead id="netLayerHead"></thead><tbody id="netLayerRows"></tbody></table></div>

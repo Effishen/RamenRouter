@@ -58,6 +58,10 @@ Use a layer’s header checkbox to check or uncheck every net shown in the
 table. With no search, this changes all nets. With a search, it changes only
 matching nets; the other nets keep their selections.
 
+Search with **\*** wildcards: **USB\*** finds names starting with USB,
+**\*CLK** finds names ending with CLK, and **\*CLK\*** finds names containing
+CLK. Searches ignore capitalisation. Plain text still finds any part of a name.
+
 Save your current result before applying layer changes: applying replaces it
 with the input board, keeping its imported traces and vias. If existing traces
 use an excluded layer, revise the selection or choose **Clear routing & start
