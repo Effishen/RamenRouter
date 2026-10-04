@@ -415,6 +415,8 @@ dialog p{font-size:16px;line-height:1.65}
 .net-layers-tools input::placeholder{color:#8ba5b0}
 .net-layers-tools button,.net-layer-table button,.net-layer-actions button{min-height:42px;padding:8px 12px;border:1px solid #547269;border-radius:5px;background:#243a34;color:#d4e6dd;font-size:15px;line-height:1.4}
 .net-layers-dialog .net-layer-count{font-size:14px;color:#a5bfb5;margin:12px 0 9px}
+.net-layers-dialog .net-layer-bulk-help{font-size:14px;color:#b4ccc7;margin:12px 0 0}
+.net-layer-column{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;min-height:48px;cursor:pointer}
 .net-layer-table-scroll{max-height:42vh;min-height:130px;overflow:auto;border:1px solid #3a5159;border-radius:5px;scrollbar-color:#4c686d #13232b;scrollbar-width:thin}
 .net-layer-table-scroll:focus-visible{outline:2px solid var(--teal);outline-offset:3px}
 .net-layer-table{border-collapse:separate;border-spacing:0;width:100%;min-width:520px;font-size:15px;text-align:left}

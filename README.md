@@ -54,6 +54,10 @@ may use. You can choose one layer or several. **Reset** restores the layer
 rule from your imported file. These choices affect routing; the preview's
 **Visible layers** controls only change what you see.
 
+Use a layer’s header checkbox to check or uncheck every net shown in the
+table. With no search, this changes all nets. With a search, it changes only
+matching nets; the other nets keep their selections.
+
 Save your current result before applying layer changes: applying replaces it
 with the input board, keeping its imported traces and vias. If existing traces
 use an excluded layer, revise the selection or choose **Clear routing & start

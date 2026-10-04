@@ -802,10 +802,15 @@
     return selected.size === layers.length && layers.every(layer => selected.has(layer));
   }
 
+  function filteredNetLayerNets() {
+    const query = $('netLayerSearch').value.trim().toLocaleLowerCase();
+    return netLayersData.nets.filter(net => String(net.name).toLocaleLowerCase().includes(query));
+  }
+
   function updateNetLayerDraftStatus() {
     if (!netLayersData) return;
-    let changed = 0, invalid = 0, inaccessible = 0, visible = 0;
-    const query = $('netLayerSearch').value.trim().toLocaleLowerCase();
+    let changed = 0, invalid = 0, inaccessible = 0;
+    const shownNets = filteredNetLayerNets(), shownIds = new Set(shownNets.map(net => net.id));
     const unavailable = !connected || busy || isActive() || currentState?.job?.id !== netLayersData.jobId;
     for (const net of netLayersData.nets) {
       const selected = netLayerDrafts.get(net.id);
@@ -816,8 +821,7 @@
       if (edited) changed++;
       if (!selected.size) invalid++;
       inaccessible += unreachable;
-      row.hidden = !String(net.name).toLocaleLowerCase().includes(query);
-      if (!row.hidden) visible++;
+      row.hidden = !shownIds.has(net.id);
       row.classList.toggle('net-layer-invalid', selected.size === 0);
       row.classList.toggle('net-layer-edited', edited);
       net.status.textContent = !selected.size ? 'Select at least one layer' : (imported ? 'Imported rule' : 'Custom layer rule');
@@ -830,7 +834,14 @@
         checkbox.setAttribute('aria-invalid', String(!selected.size));
       }
     }
-    $('netLayerCount').textContent = `${number(visible)} of ${number(netLayersData.nets.length)} nets shown · ${number(changed)} ${changed === 1 ? 'change' : 'changes'} to apply`;
+    for (const checkbox of $('netLayerHead').querySelectorAll('input[data-layer-id]')) {
+      const layerId = Number(checkbox.dataset.layerId);
+      const selectedCount = shownNets.filter(net => netLayerDrafts.get(net.id).has(layerId)).length;
+      checkbox.checked = shownNets.length > 0 && selectedCount === shownNets.length;
+      checkbox.indeterminate = selectedCount > 0 && selectedCount < shownNets.length;
+      checkbox.disabled = unavailable || shownNets.length === 0;
+    }
+    $('netLayerCount').textContent = `${number(shownNets.length)} of ${number(netLayersData.nets.length)} nets shown · ${number(changed)} ${changed === 1 ? 'change' : 'changes'} to apply`;
     $('netLayerValidation').hidden = !invalid;
     $('netLayerValidation').textContent = invalid ? `Select at least one layer for every net. ${number(invalid)} ${invalid === 1 ? 'net needs' : 'nets need'} a layer, including any hidden by your search.` : '';
     $('netLayerPadWarning').hidden = !inaccessible;
@@ -842,9 +853,25 @@
 
   function renderNetLayerRows() {
     const heading = document.createElement('tr');
-    for (const name of ['Net', ...netLayersData.layers.map(layer => layer.name), 'Restore']) {
-      const th = document.createElement('th'); th.scope = 'col'; th.textContent = name; heading.append(th);
+    const netHeading = document.createElement('th'); netHeading.scope = 'col'; netHeading.textContent = 'Net'; heading.append(netHeading);
+    for (const layer of netLayersData.layers) {
+      const th = document.createElement('th'); th.scope = 'col';
+      const label = document.createElement('label'); label.className = 'net-layer-column';
+      const name = document.createElement('span'); name.textContent = layer.name;
+      const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.layerId = String(layer.id);
+      checkbox.setAttribute('aria-label', `${layer.name}: all shown nets`);
+      checkbox.setAttribute('aria-describedby', 'netLayerBulkHelp');
+      checkbox.addEventListener('change', () => {
+        if (!connected || busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
+        for (const net of filteredNetLayerNets()) {
+          const selected = netLayerDrafts.get(net.id);
+          if (checkbox.checked) selected.add(layer.id); else selected.delete(layer.id);
+        }
+        updateNetLayerDraftStatus();
+      });
+      label.append(name, checkbox); th.append(label); heading.append(th);
     }
+    const restoreHeading = document.createElement('th'); restoreHeading.scope = 'col'; restoreHeading.textContent = 'Restore'; heading.append(restoreHeading);
     $('netLayerHead').replaceChildren(heading);
     const rows = document.createDocumentFragment();
     for (const net of netLayersData.nets) {
