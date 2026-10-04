@@ -46,6 +46,7 @@ function createRamenRouter(geometry, optimizer, fanout) {
     const bx=original.bounds.minX,by=original.bounds.minY,nx=Math.ceil((original.bounds.maxX-bx)/step)+1,ny=Math.ceil((original.bounds.maxY-by)/step)+1,plane=nx*ny,total=plane*original.layers.length;
     if(total>6000000)throw new Error('Board grid exceeds the browser memory limit. Use a coarser grid.');
     const layerCount=original.layers.length;
+    const traceLayers=net=>net.useLayers||original.layers.map(l=>l.index);
     const idx=(x,y,l)=>l*plane+y*nx+x, xy=id=>{let q=id%plane;return[bx+(q%nx)*step,by+Math.floor(q/nx)*step,Math.floor(id/plane)];};
     const boundaryEdges=G.boundaryEdges(original);
     const padShapes=[];for(const p of original.pads)for(const shape of p.shapes)padShapes.push({pad:p,shape,box:G.shapeBounds(shape)});
@@ -59,6 +60,7 @@ function createRamenRouter(geometry, optimizer, fanout) {
     let dynamicIndex=null,indexGeneration=-1;
     function getDynamicIndex(){if(indexGeneration!==generation){const p=G.copper(board).primitives.filter(p=>(p.object.kind==='trace'&&p.object.index>=original.traces.length)||(p.object.kind==='via'&&p.object.index>=original.vias.length));dynamicIndex=Array.from({length:layerCount},(_,l)=>G.spatialIndex(p.filter(p=>p.layer===l),indexSize));indexGeneration=generation;}return dynamicIndex;}
     function exactEdgeClear(a,b,layer,net,soft){
+      if(!traceLayers(net).includes(layer))return false;
       const half=net.width/2,box=expanded(bboxPoints([a,b]),half+maxClearance);
       if(!G.shapeInsideBoard({type:'capsule',a,b,r:half,layer},original,boundaryEdges))return false;
       for(const p of staticIndex[layer].query(box)){if(!p.keepout&&p.net===net.id)continue;const clear=p.keepout?(p.clearance??clearanceOf(net)):Math.max(clearanceOf(net),p.clearance||0);if(G.distanceSegmentShape(a[0],a[1],b[0],b[1],p.shape)<half+clear-EPS)return false;}
@@ -98,6 +100,7 @@ function createRamenRouter(geometry, optimizer, fanout) {
       return c;
     }
     function staticSegmentClear(a,b,layer,net,soft=false){
+      if(!traceLayers(net).includes(layer))return false;
       const half=net.width/2,segmentBox=bboxPoints([a,b]);
       if(!G.shapeInsideBoard({type:'capsule',a:[a[0],a[1]],b:[b[0],b[1]],r:half,layer},original,boundaryEdges))return false;
       for(const o of padShapes)if(o.shape.layer===layer&&o.pad.net!==net.id){let r=half+Math.max(clearanceOf(net),clearanceOf(rules.get(o.pad.net)));if(overlap(expanded(o.box,r),segmentBox)&&G.distanceSegmentShape(a[0],a[1],b[0],b[1],o.shape)<r-EPS)return false;}
@@ -106,10 +109,42 @@ function createRamenRouter(geometry, optimizer, fanout) {
       for(const k of original.keepouts||[])if(k.kind!=='via'&&(!k.layers||k.layers.includes(layer))){let r=half+(k.clearance??clearanceOf(net));if(overlap(expanded(G.shapeBounds(k.shape),r),segmentBox)&&G.distanceSegmentShape(a[0],a[1],b[0],b[1],k.shape)<r-EPS)return false;}
       return true;
     }
+    function endpointVia(p,net,c,soft){
+      const def=c.via,l=p[2]??0;
+      if(def.disabled||def.name!==net.viaName||!original.viaAtSmd||def.attachAllowed===false||l<def.fromLayer||l>def.toLayer)return null;
+      const pad=original.pads.find(a=>a.net===net.id&&Math.hypot(a.x-p[0],a.y-p[1])<EPS&&a.shapes.some(s=>s.layer===l));
+      if(!pad||new Set(pad.shapes.map(s=>s.layer)).size!==1)return null;
+      const layers=Array.from({length:def.toLayer-def.fromLayer+1},(_,i)=>def.fromLayer+i);
+      // The via retains its entire physical span, including excluded trace
+      // layers. Check all of its copper before using it as a routing endpoint.
+      for(const layer of layers){
+        if(!staticIndex[layer])return null;
+        const shape={type:'circle',cx:p[0],cy:p[1],r:def.diameter/2,layer},bounds=G.shapeBounds(shape);
+        if(!G.shapeInsideBoard(shape,original,boundaryEdges))return null;
+        for(const q of staticIndex[layer].query(bounds,maxClearance)){
+          if(!q.keepout&&q.net===net.id)continue;
+          const clearance=q.keepout?(q.clearance??clearanceOf(net)):Math.max(clearanceOf(net),q.clearance||0),distance=G.distanceShapes(shape,q.shape);
+          if(distance+EPS<clearance||distance<EPS)return null;
+        }
+        if(!soft)for(const q of getDynamicIndex()[layer].query(bounds,maxClearance)){
+          if(q.net===net.id)continue;
+          const distance=G.distanceShapes(shape,q.shape);
+          if(distance+EPS<Math.max(clearanceOf(net),clearanceOf(rules.get(q.net)))||distance<EPS)return null;
+        }
+        for(const k of original.keepouts||[]){
+          if(k.layers&&!k.layers.includes(layer))continue;
+          const distance=G.distanceShapes(shape,k.shape);
+          if(distance+EPS<(k.clearance??clearanceOf(net))||distance<EPS)return null;
+        }
+      }
+      return {net:net.id,x:p[0],y:p[1],diameter:def.diameter,padstack:def.name,layers,fixed:false};
+    }
     function groupSeeds(group,net,c,soft=false){
-      let seeds=new Map(),points=group.points||[];
-      for(const p of points){let l=p[2]??0;if(!(net.useLayers||original.layers.map(l=>l.index)).includes(l))continue;
-        let anchors=[{at:p,bridge:[[p[0],p[1]]]}];
+      let seeds=new Map(),points=group.points||[],layers=traceLayers(net);
+      for(const p of points){const padLayer=p[2]??0,via=layers.includes(padLayer)?null:endpointVia(p,net,c,soft);
+        const sourceLayers=layers.includes(padLayer)?[padLayer]:via?layers.filter(l=>via.layers.includes(l)):[];
+        for(const l of sourceLayers){
+        let anchors=[{at:[p[0],p[1],l],bridge:[[p[0],p[1]]]}];
         if(options.fanout!==false){
           const pad=original.pads.find(a=>a.net===net.id&&Math.hypot(a.x-p[0],a.y-p[1])<EPS);
           if(pad){let shape=pad.shapes.find(s=>s.layer===l),box=shape?G.shapeBounds(shape):null;
@@ -122,7 +157,8 @@ function createRamenRouter(geometry, optimizer, fanout) {
             }
           }
         }
-        for(const anchor of anchors){let at=anchor.at,gx=Math.round((at[0]-bx)/step),gy=Math.round((at[1]-by)/step);for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){let x=gx+dx,y=gy+dy;if(x<0||x>=nx||y<0||y>=ny)continue;let id=idx(x,y,l),v=xy(id);if(allowed(c.base,id,net.id)&&(soft||allowed(c.dyn,id,net.id))&&staticSegmentClear(at,v,l,net,soft)){let bridge=anchor.bridge.concat([[v[0],v[1]]]),cost=length({points:bridge});let old=seeds.get(id);if(!old||cost<old.cost)seeds.set(id,{point:p,bridge,cost});}}}
+        for(const anchor of anchors){let at=anchor.at,gx=Math.round((at[0]-bx)/step),gy=Math.round((at[1]-by)/step);for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){let x=gx+dx,y=gy+dy;if(x<0||x>=nx||y<0||y>=ny)continue;let id=idx(x,y,l),v=xy(id);if(allowed(c.base,id,net.id)&&(soft||allowed(c.dyn,id,net.id))&&staticSegmentClear(at,v,l,net,soft)){let bridge=anchor.bridge.concat([[v[0],v[1]]]),cost=length({points:bridge})+(via?(options.viaCost||net.width*5):0);let old=seeds.get(id);if(!old||cost<old.cost)seeds.set(id,{point:p,bridge,cost,via});}}}
+        }
       }return seeds;
     }
     async function search(seeds,targets,net,c,soft=false,softPenalty=80){
@@ -132,7 +168,7 @@ function createRamenRouter(geometry, optimizer, fanout) {
       goalPoints.sort((a,b)=>Math.hypot(a[0]-startPoint[0],a[1]-startPoint[1])-Math.hypot(b[0]-startPoint[0],b[1]-startPoint[1]));goalPoints=goalPoints.slice(0,12);
       let goalBox=bboxPoints(goalPoints),heap=new Heap(),visitedCount=0;
       const heuristic=id=>{let p=xy(id),dx=Math.max(goalBox.minX-p[0],0,p[0]-goalBox.maxX)/step,dy=Math.max(goalBox.minY-p[1],0,p[1]-goalBox.maxY)/step;return Math.max(dx,dy)+(SQRT2-1)*Math.min(dx,dy);};
-      const layers=net.useLayers||original.layers.map(l=>l.index),viaCost=(options.viaCost||net.width*5)/step;
+      const layers=traceLayers(net),viaCost=(options.viaCost||net.width*5)/step;
       for(const [id,seed]of seeds){visited[id]=tag;gCost[id]=(seed.cost||0)/step;parent[id]=-1;heap.push(id,gCost[id]+heuristic(id));}
       function relax(from,to,cost){if(closed[to]===tag)return;let g=gCost[from]+cost;if(visited[to]!==tag||g<gCost[to]){visited[to]=tag;gCost[to]=g;parent[to]=from;heap.push(to,g+heuristic(to));}}
       while(heap.nodes.length){let entry=heap.pop(),id=entry[0];if(closed[id]===tag)continue;closed[id]=tag;if(targets.has(id)){let path=[];for(let p=id;p>=0;p=parent[p])path.push(p);path.reverse();return{path,seeds,targets};}
@@ -147,6 +183,7 @@ function createRamenRouter(geometry, optimizer, fanout) {
     function convertPath(found,net){
       let p=found.path,segments=[],vias=[],first=xy(p[0]),last=xy(p[p.length-1]);
       let start=found.seeds.get(p[0])||first,end=found.targets.get(p[p.length-1])||last;
+      for(const via of [start.via,end.via])if(via&&!vias.some(v=>Math.hypot(v.x-via.x,v.y-via.y)<EPS))vias.push(via);
       let points=start.bridge?start.bridge.map(p=>p.slice()):[[start[0],start[1]],[first[0],first[1]]],layer=first[2];
       for(let i=1;i<p.length;i++){let v=xy(p[i]);if(v[2]!==layer){if(points.length>1)segments.push({net:net.id,layer,width:net.width,points:simplify(points),fixed:false});let def=original.viaDefs.find(v=>v.name===net.viaName)||original.viaDefs[0];if(!vias.some(a=>Math.hypot(a.x-v[0],a.y-v[1])<EPS))vias.push({net:net.id,x:v[0],y:v[1],diameter:def.diameter,padstack:def.name,layers:Array.from({length:def.toLayer-def.fromLayer+1},(_,k)=>k+def.fromLayer),fixed:false});layer=v[2];points=[[v[0],v[1]]];}else points.push([v[0],v[1]]);}
       if(end.bridge)points.push(...end.bridge.slice().reverse().map(p=>p.slice()));else points.push([end[0],end[1]]);

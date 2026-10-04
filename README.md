@@ -48,6 +48,19 @@ connections and board rules stay in place, and your original file is unchanged.
 Review the cleared board, then click **Start routing** when you are ready.
 Download any result you want to keep before clearing it.
 
+Want a particular net to stay on one side of the board? Open **Net routing
+layers** under Routing setup, find the net, and select the layers its traces
+may use. You can choose one layer or several. **Reset** restores the layer
+rule from your imported file. These choices affect routing; the preview's
+**Visible layers** controls only change what you see.
+
+Save your current result before applying layer changes: applying replaces it
+with the input board, keeping its imported traces and vias. If existing traces
+use an excluded layer, revise the selection or choose **Clear routing & start
+over**. Pads and through vias keep their physical layer spans. Some layer
+choices can leave pads hard to reach, so review any warnings, then click
+**Start routing** when ready. Your exported DSN keeps your layer selections.
+
 With **Smart search** enabled, RamenRouter makes a final focused attempt when
 only a few connections remain. It keeps the best checked result throughout.
 

@@ -18,6 +18,7 @@ function createRamenFanout(geometry) {
     if(options.viaInPad){board.viaAtSmd=true;board.viaInPadApplied=true;for(const def of board.viaDefs)def.attachAllowed=true;}
     const cancelled=()=>isCancelled()||Date.now()>deadline;
     const nets=new Map(board.nets.map(n=>[n.id,n])),defs=new Map(board.viaDefs.map(v=>[v.name,v]));
+    const traceLayers=net=>net.useLayers||board.layers.map(l=>l.index);
     const padCounts=new Map(board.nets.map(n=>[n.id,board.pads.filter(p=>p.net===n.id).length]));
     const baseValidation=G.validate(board),edges=G.boundaryEdges(board),primitives=G.copper(board).primitives;
     const span=Math.max(board.bounds.maxX-board.bounds.minX,board.bounds.maxY-board.bounds.minY),cell=Math.max(span/60,.01);
@@ -25,8 +26,14 @@ function createRamenFanout(geometry) {
     for(const p of primitives)indices.get(p.layer)?.insert(p);
     const initialTraces=board.traces.length,initialVias=board.vias.length;
     const attached=new Set();
-    for(const c of G.connectivity(board).components)for(const group of c.groups)if(new Set(group.points.map(p=>p[2])).size>1)for(const id of group.pads)attached.add(id);
-    const shapes=board.pads.filter(p=>p.net&&new Set(p.shapes.map(s=>s.layer)).size===1&&padCounts.get(p.net)>1).map(p=>({pad:p,shape:p.shapes[0],geometry:axisFor(p.shapes[0]),net:nets.get(p.net)})).filter(p=>p.net&&defs.has(p.net.viaName));
+    for(const c of G.connectivity(board).components)for(const group of c.groups)for(const id of group.pads){
+      const pad=board.pads.find(p=>p.id===id),net=nets.get(c.net);
+      if(pad&&net&&group.points.some(p=>traceLayers(net).includes(p[2])&&!pad.shapes.some(s=>s.layer===p[2])))attached.add(id);
+    }
+    const shapes=board.pads.filter(p=>p.net&&new Set(p.shapes.map(s=>s.layer)).size===1&&padCounts.get(p.net)>1).map(p=>({pad:p,shape:p.shapes[0],geometry:axisFor(p.shapes[0]),net:nets.get(p.net)})).filter(p=>{
+      const def=p.net&&defs.get(p.net.viaName);
+      return def&&traceLayers(p.net).some(l=>l!==p.shape.layer&&l>=def.fromLayer&&l<=def.toLayer);
+    });
     const allPadShapes=board.pads.flatMap(p=>p.shapes.map(s=>({pad:p,shape:s,box:G.shapeBounds(s)})));
     function sameNet(a,b){return a!=null&&a===b;}
     const clearance=net=>nets.get(net)?.routingClearance??nets.get(net)?.clearance??board.defaultClearance??0;
@@ -51,7 +58,7 @@ function createRamenFanout(geometry) {
       for(const k of board.keepouts||[]){if(k.layers&&!k.layers.includes(p.layer)||k.kind==='via'&&p.kind!=='via')continue;const distance=G.distanceShapes(p.shape,k.shape);if(distance+EPS<(k.clearance??radius)||distance<=EPS)return false;}
       return true;
     }
-    function legalBundle(bundle,temporary=[]) {return itemPrimitives(bundle).every(p=>clearPrimitive(p,temporary));}
+    function legalBundle(bundle,temporary=[]) {return bundle.traces.every(t=>traceLayers(nets.get(t.net)).includes(t.layer))&&itemPrimitives(bundle).every(p=>clearPrimitive(p,temporary));}
     function bundleFor(entry,end,normal,shoulder) {
       const p=entry.pad,net=entry.net,def=defs.get(net.viaName),layer=entry.shape.layer;
       const points=[[p.x,p.y]];
@@ -59,7 +66,7 @@ function createRamenFanout(geometry) {
       if(dist(points[points.length-1],end)>EPS)points.push(end);
       const trace={net:net.id,layer,width:net.width,points,fixed:false,fanout:true};
       const via={x:end[0],y:end[1],net:net.id,padstack:def.name,diameter:def.diameter,layers:Array.from({length:def.toLayer-def.fromLayer+1},(_,i)=>def.fromLayer+i),fixed:false,fanout:true};
-      if(layer<def.fromLayer||layer>def.toLayer)return null;
+      if(layer<def.fromLayer||layer>def.toLayer||points.length>1&&!traceLayers(net).includes(layer))return null;
       return {traces:points.length>1?[trace]:[],vias:[via],pads:[p.id]};
     }
     function commit(bundle){
@@ -69,7 +76,7 @@ function createRamenFanout(geometry) {
     }
     // A row is inferred from nearby, parallel elongated pads, never component IDs.
     const buckets=[];
-    for(const entry of shapes){if(!entry.geometry||entry.geometry.ratio<1.6)continue;
+    for(const entry of shapes){if(!traceLayers(entry.net).includes(entry.shape.layer)||!entry.geometry||entry.geometry.ratio<1.6)continue;
       // Compare directions directly: angular rounding splits a 45-degree row
       // across adjacent bins when floating-point error straddles a bin edge.
       let bucket=buckets.find(b=>b.layer===entry.shape.layer&&dot(b.axis,entry.geometry.axis)>Math.cos(Math.PI/90));
@@ -170,11 +177,12 @@ function createRamenFanout(geometry) {
     for(const entry of shapes){if(cancelled())break;if(attached.has(entry.pad.id))continue;
       const box=G.shapeBounds(entry.shape),shortSpan=Math.min(box.maxX-box.minX,box.maxY-box.minY),net=entry.net,p=entry.pad;
       let neighbours=0;for(const q of allPadShapes)if(q.shape.layer===entry.shape.layer&&q.pad.net!==p.net&&G.distanceShapes(entry.shape,q.shape)<net.width+clearance(net.id))neighbours++;
-      if(shortSpan>net.width*1.3&&neighbours<6)continue;
+      const padLayerAllowed=traceLayers(net).includes(entry.shape.layer);
+      if(padLayerAllowed&&shortSpan>net.width*1.3&&neighbours<6)continue;
       const axis=entry.geometry?.axis||[1,0],tangent=[-axis[1],axis[0]],directions=[axis,axis.map(v=>-v),tangent,tangent.map(v=>-v)];
       let found=null;
       if(board.viaAtSmd&&defs.get(net.viaName).attachAllowed!==false){const b=bundleFor(entry,[p.x,p.y],[1,0],0);if(b&&legalBundle(b))found=b;}
-      for(const multiplier of [2,3,4,6,8,10]){if(found)break;for(const direction of directions){const end=[p.x+direction[0]*net.width*multiplier,p.y+direction[1]*net.width*multiplier],b=bundleFor(entry,end,direction,0);if(b&&legalBundle(b)){found=b;break;}}}
+      if(padLayerAllowed)for(const multiplier of [2,3,4,6,8,10]){if(found)break;for(const direction of directions){const end=[p.x+direction[0]*net.width*multiplier,p.y+direction[1]*net.width*multiplier],b=bundleFor(entry,end,direction,0);if(b&&legalBundle(b)){found=b;break;}}}
       if(found)commit(found);
       await new Promise(r=>setTimeout(r,0));
     }

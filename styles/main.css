@@ -396,3 +396,46 @@ dialog p{font-size:16px;line-height:1.65}
 .clear-routing-actions button{flex:1;min-width:0;min-height:46px;padding:10px 12px;font-size:16px;line-height:1.4;border:1px solid #55716b;border-radius:5px;background:#243a34;color:#d4e6dd}
 .clear-routing-actions #confirmClearRouting{border-color:#bd9879;background:#5d3f30;color:#ffe3ca}
 @media(max-width:450px){.clear-routing-dialog{padding:21px}.clear-routing-dialog h2{font-size:25px}.clear-routing-actions{gap:8px}.clear-routing-actions button{font-size:15px;padding:10px 8px}}
+
+/* Per-net trace layers, separate from the preview's visibility controls. */
+.net-layers-setting{padding:12px 0 15px;border-bottom:1px solid var(--line)}
+.net-layers-button{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:44px;padding:10px 12px;border:1px solid #45605e;border-radius:5px;background:#1c302f;color:#c2e2d5;font-size:15px;text-align:left}
+.net-layers-button>span{font-size:23px;line-height:1}
+.net-layers-setting>p{margin:8px 0 0;font-size:13px;line-height:1.5;color:#a5bfb5}
+.net-layer-conflict{margin:0 0 12px;padding:10px 12px;border:1px solid #866342;border-radius:5px;background:#352b22;color:#efc99f;font-size:14px;line-height:1.5}
+.net-layers-dialog{width:1000px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);padding:24px 28px;overflow:auto}
+.net-layers-dialog h2{font-size:28px;margin:17px 0 10px}
+.net-layers-dialog p{font-size:15px;line-height:1.5;margin:10px 0}
+.net-layers-dialog .net-layers-physical-note{font-size:14px;color:#a4bac1}
+.net-layers-dialog .net-layers-apply-note{border-left:3px solid #c79973;padding:9px 12px;background:#322d25;color:#e7c4a2}
+.net-layers-apply-note strong{color:#f2dec7}
+.net-layers-tools{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-top:17px}
+.net-layers-tools label{flex:1;max-width:500px;font-size:14px;line-height:1.5;color:#c3d6d9}
+.net-layers-tools input{display:block;width:100%;margin-top:5px;padding:10px 12px;min-height:44px;border:1px solid #4b646b;border-radius:5px;background:#0f1a21;color:#e1e9e9;font-size:16px}
+.net-layers-tools input::placeholder{color:#8ba5b0}
+.net-layers-tools button,.net-layer-table button,.net-layer-actions button{min-height:42px;padding:8px 12px;border:1px solid #547269;border-radius:5px;background:#243a34;color:#d4e6dd;font-size:15px;line-height:1.4}
+.net-layers-dialog .net-layer-count{font-size:14px;color:#a5bfb5;margin:12px 0 9px}
+.net-layer-table-scroll{max-height:42vh;min-height:130px;overflow:auto;border:1px solid #3a5159;border-radius:5px;scrollbar-color:#4c686d #13232b;scrollbar-width:thin}
+.net-layer-table-scroll:focus-visible{outline:2px solid var(--teal);outline-offset:3px}
+.net-layer-table{border-collapse:separate;border-spacing:0;width:100%;min-width:520px;font-size:15px;text-align:left}
+.net-layer-table th,.net-layer-table td{padding:11px 14px;border-bottom:1px solid #2b424a;line-height:1.4}
+.net-layer-table thead th{position:sticky;top:0;z-index:2;background:#243a40;color:#c9dedc;font-size:14px;font-weight:600;text-align:center;min-width:100px;max-width:180px;overflow-wrap:anywhere}
+.net-layer-table thead th:first-child{left:0;z-index:3;text-align:left;min-width:210px}
+.net-layer-table tbody th{position:sticky;left:0;z-index:1;min-width:210px;max-width:280px;background:#15252c;font-weight:500;color:#e0eae7;overflow-wrap:anywhere}
+.net-layer-table tbody td{background:#132128;text-align:center}
+.net-layer-table tbody tr:last-child>*{border-bottom:0}
+.net-layer-table input[type=checkbox]{width:22px;height:22px;margin:0;accent-color:var(--teal);cursor:pointer;vertical-align:middle}
+.net-layer-table input[type=checkbox]:disabled{cursor:not-allowed;opacity:.45}
+.net-layer-name{display:block}
+.net-layer-rule-status,.net-layer-row-warning{display:block;font-size:12px;font-weight:400;margin-top:4px;color:#97b4bc}
+.net-layer-row-warning{color:#e5bb91}
+.net-layer-edited .net-layer-rule-status{color:#a1dfbf}
+.net-layer-invalid .net-layer-rule-status{color:#ffb8aa}
+.net-layer-invalid>*{box-shadow:inset 0 -2px #b97668}
+.net-layers-dialog .net-layer-validation{font-size:14px;color:#ffb8aa}
+.net-layers-dialog .net-layer-pad-warning{font-size:14px;color:#e5bb91}
+.net-layer-actions{display:flex;justify-content:flex-end;gap:12px;margin-top:18px}
+.net-layer-actions button{min-width:130px;min-height:46px;font-size:16px}
+.net-layer-actions #applyNetLayers{background:var(--teal);border-color:#8ce9cd;color:#10382d;font-weight:600}
+.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:600px){.net-layers-dialog{padding:19px;max-width:calc(100vw - 20px);max-height:calc(100dvh - 20px)}.net-layers-dialog h2{font-size:25px}.net-layers-tools{align-items:stretch;flex-direction:column;gap:10px}.net-layers-tools label{max-width:none}.net-layers-tools button{align-self:flex-start}.net-layer-actions button{flex:1;min-width:0}.net-layer-table tbody th,.net-layer-table thead th:first-child{min-width:170px;max-width:210px}.net-layer-table th,.net-layer-table td{padding:10px}.net-layer-table-scroll{max-height:36vh}}

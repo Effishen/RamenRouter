@@ -25,7 +25,7 @@
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M5 20h30c-1 10-7 15-15 15S6 30 5 20Zm6 15h18M10 7v5h8v8m9-16v8h-4v8M4 15h13M25 15h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="5" r="2" fill="currentColor"/><circle cx="27" cy="3" r="2" fill="currentColor"/></svg>
       <span>Ramen<span class="brand-light">Router</span><span class="brand-caption">PCB ROUTING WORKBENCH</span></span>
     </div>
-    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.5</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
+    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.6</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
     <div class="connection" id="connection"><span class="status-dot"></span><span id="connectionText">Starting browser engine</span></div>
     <button class="icon-button help-button" id="helpButton" title="About this workbench" aria-label="About this workbench">?</button>
   </header>
@@ -50,6 +50,10 @@
       <div class="section-rule"></div>
       <div class="section-kicker"><span class="section-number">02</span> ROUTING SETUP <span class="edition-tag" id="routingModeTag">SMART</span></div>
       <div class="engine-card"><span class="engine-glyph" aria-hidden="true">⤳</span><div><strong id="routingModeName">Ramen smart routing</strong><p id="routingModeDetail">Search across multiple routing attempts.</p></div><span class="selected-tick" aria-label="Selected">✓</span></div>
+      <div class="net-layers-setting" id="netLayersSetting" hidden>
+        <button class="net-layers-button" id="netLayersButton" type="button" aria-haspopup="dialog" disabled>Net routing layers <span aria-hidden="true">›</span></button>
+        <p id="netLayersSummary">Choose which layers each net can use.</p>
+      </div>
 
       <form id="settingsForm">
         <div class="setting-block fanout-setting">
@@ -66,7 +70,7 @@
         <div class="number-settings"><label for="maxPasses">Routing attempts <input type="number" id="maxPasses" name="maxPasses" min="1" max="100" step="1" value="12"><span>Includes repairs and fresh starts</span></label><label for="timeoutMinutes">Time limit <div class="number-unit"><input type="number" id="timeoutMinutes" name="timeoutMinutes" min="1" max="1440" step="1" value="30"><span>min</span></div><span>Entire job</span></label></div>
       </form>
       </div>
-      <div class="run-controls"><button class="primary-button" id="runButton" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6V4Z" fill="currentColor"/></svg><span id="runLabel">Start routing</span><span class="button-shortcut">↵</span></button><button class="stop-button" id="stopButton" hidden><span class="stop-square"></span>Stop job</button><button class="force-stop-button" id="forceStopButton" hidden>Force stop</button><button class="view-stopped-button" id="viewStoppedResult" type="button" hidden>View best result</button><p class="run-hint" id="runHint">Load a board to begin.</p></div>
+      <div class="run-controls"><p class="net-layer-conflict" id="netLayerConflict" role="status" hidden></p><button class="primary-button" id="runButton" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6V4Z" fill="currentColor"/></svg><span id="runLabel">Start routing</span><span class="button-shortcut">↵</span></button><button class="stop-button" id="stopButton" hidden><span class="stop-square"></span>Stop job</button><button class="force-stop-button" id="forceStopButton" hidden>Force stop</button><button class="view-stopped-button" id="viewStoppedResult" type="button" hidden>View best result</button><p class="run-hint" id="runHint">Load a board to begin.</p></div>
       <div class="sidebar-foot"><span class="lock-icon" aria-hidden="true">⌁</span> Your board stays on this computer.</div>
     </aside>
 
@@ -130,11 +134,24 @@
       <button id="downloadSes" class="export-button" disabled><span class="export-file-type">SES</span><span><strong>Routing session</strong><small>Import into your PCB editor</small></span><span class="download-arrow" aria-hidden="true">↓</span></button>
       <div class="secondary-downloads"><button id="downloadDsn" class="text-button" disabled>Routed DSN <span aria-hidden="true">↓</span></button><button id="downloadChecks" class="text-button" disabled>Check report <span aria-hidden="true">↓</span></button><button id="downloadLog" class="text-button" disabled>Engine log <span aria-hidden="true">↓</span></button></div>
       <p class="export-note">Check clearances, connectivity and design rules in your PCB editor before manufacturing.</p>
-      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.5</span><span>Independent browser engine · GPL-3.0</span></div>
+      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.6</span><span>Independent browser engine · GPL-3.0</span></div>
       </div>
     </aside>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="netLayersDialog" class="net-layers-dialog" aria-labelledby="netLayersTitle" aria-describedby="netLayersDescription netLayersApplyNote">
+    <div class="dialog-header"><span class="section-kicker">ROUTING RULES</span><button id="closeNetLayers" class="icon-button" type="button" aria-label="Cancel net layer changes">×</button></div>
+    <h2 id="netLayersTitle">Net routing layers</h2>
+    <p id="netLayersDescription">Choose the copper layers each net may use for traces. Your selection replaces that net’s imported layer rule. Reset restores the imported rule.</p>
+    <p class="net-layers-physical-note">Pads and through vias keep their physical layer spans. Selecting a layer here does not change the board’s construction.</p>
+    <p class="net-layers-apply-note" id="netLayersApplyNote"><strong>Save your current result first.</strong> Applying replaces the current routed result with the input board. Imported copper stays. Start routing when you are ready.</p>
+    <div class="net-layers-tools"><label for="netLayerSearch">Find a net<input id="netLayerSearch" type="search" placeholder="Search net names" autocomplete="off" autofocus></label><button id="resetAllNetLayers" type="button">Reset all to imported</button></div>
+    <p class="net-layer-count" id="netLayerCount" role="status" aria-live="polite"></p>
+    <div class="net-layer-table-scroll" tabindex="0" role="region" aria-label="Net routing layer selections, scroll for more nets or layers"><table class="net-layer-table"><caption class="visually-hidden">Allowed trace layers for each net</caption><thead id="netLayerHead"></thead><tbody id="netLayerRows"></tbody></table></div>
+    <p class="net-layer-validation" id="netLayerValidation" role="status" aria-live="polite" hidden></p>
+    <p class="net-layer-pad-warning" id="netLayerPadWarning" role="status" aria-live="polite" hidden></p>
+    <div class="net-layer-actions"><button id="cancelNetLayers" type="button">Cancel</button><button id="applyNetLayers" type="button" disabled>Apply layers</button></div>
+  </dialog>
   <dialog id="clearRoutingDialog" class="clear-routing-dialog" aria-labelledby="clearRoutingTitle" aria-describedby="clearRoutingDescription clearRoutingFixed clearRoutingPreserved">
     <div class="dialog-header"><span class="section-kicker">START FRESH</span><button id="closeClearRouting" class="icon-button" type="button" aria-label="Cancel clearing routing">×</button></div>
     <h2 id="clearRoutingTitle">Clear routing &amp; start over?</h2>

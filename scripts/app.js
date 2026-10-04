@@ -2,7 +2,7 @@
 
 (() => {
   const $ = id => document.getElementById(id);
-  const activeStates = new Set(['inspecting', 'clearing', 'starting', 'running', 'routing', 'fanout', 'optimizing', 'stopping', 'loading']);
+  const activeStates = new Set(['inspecting', 'clearing', 'updating_rules', 'starting', 'running', 'routing', 'fanout', 'optimizing', 'stopping', 'loading']);
   const terminalStates = new Set(['completed', 'stopped', 'timed_out', 'error', 'failed']);
   const palette = ['#df9676', '#73c7c2', '#c1ab69', '#a394d3', '#83b76e', '#be86a6', '#73a0d0', '#a5b4bf'];
   const nativeEngine = globalThis.RamenNative;
@@ -30,6 +30,8 @@
   let downloadedSesJobId = null;
   let remainingRenderKey = '';
   let clearRoutingJobId = null;
+  let netLayersData = null;
+  let netLayerDrafts = new Map();
   const acknowledgedAttention = new Set();
   let activeAttentionKey = null;
   const visibleLayers = new Map();
@@ -40,7 +42,7 @@
   let drawQueued = false;
 
   const icons = { ready: '○', completed: '✓', stopped: 'Ⅱ', timed_out: '◷', error: '!', failed: '!' };
-  const labels = { ready: 'Board ready', inspecting: 'Reading your board', clearing: 'Clearing routing', starting: 'Starting engine', running: 'Routing in progress', routing: 'Routing in progress', fanout: 'Fanout in progress', optimizing: 'Refining routes', stopping: 'Stopping safely', completed: 'Job complete', stopped: 'Job stopped', timed_out: 'Time limit reached', error: 'Job needs attention', failed: 'Job needs attention', idle: 'Ready when you are' };
+  const labels = { ready: 'Board ready', inspecting: 'Reading your board', clearing: 'Clearing routing', updating_rules: 'Updating net routing layers', starting: 'Starting engine', running: 'Routing in progress', routing: 'Routing in progress', fanout: 'Fanout in progress', optimizing: 'Refining routes', stopping: 'Stopping safely', completed: 'Job complete', stopped: 'Job stopped', timed_out: 'Time limit reached', error: 'Job needs attention', failed: 'Job needs attention', idle: 'Ready when you are' };
 
   function toast(message, error = false) {
     clearTimeout(toastTimer);
@@ -82,7 +84,7 @@
     return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
   }
 
-  function phaseName(phase) { return ({ deep_search: 'Smart search', pad_escape: 'Pad-via escape', finishing: 'Finishing remaining connections' })[phase] || phase; }
+  function phaseName(phase) { return ({ deep_search: 'Smart search', pad_escape: 'Pad-via escape', finishing: 'Finishing remaining connections', updating_rules: 'Updating net routing layers' })[phase] || phase; }
 
   function isActive() { return Boolean(currentState?.job && activeStates.has(currentState.job.state)); }
 
@@ -111,6 +113,15 @@
     $('clearRoutingButton').title = routing && routing.traceCount + routing.viaCount === 0 ? 'There are no traces or routing vias to clear.' : 'Remove all traces and routing vias from the loaded board.';
     $('confirmClearRouting').disabled = !available || active || job?.id !== clearRoutingJobId;
     if ($('clearRoutingDialog').open && (job?.id !== clearRoutingJobId || active)) $('clearRoutingDialog').close();
+    $('netLayersSetting').hidden = !job || job.state === 'idle';
+    $('netLayersButton').disabled = !available || active;
+    if ($('netLayersDialog').open && (job?.id !== netLayersData?.jobId || active)) $('netLayersDialog').close();
+    const layerSummary = job?.layerRuleSummary;
+    $('netLayersSummary').textContent = layerSummary ? `${number(layerSummary.restrictedNets)} of ${number(layerSummary.totalNets)} nets limited to selected layers${job.layerRulesChanged ? ' · edited' : ''}.` : 'Choose which layers each net can use.';
+    const layerConflicts = layerSummary?.conflictingTraces || 0;
+    $('netLayerConflict').hidden = !layerConflicts || active;
+    $('netLayerConflict').textContent = layerConflicts ? `${number(layerConflicts)} existing ${layerConflicts === 1 ? 'trace is' : 'traces are'} on excluded layers. Use “Clear routing & start over” to remove existing routes, or revise the net layer rules.` : '';
+    updateNetLayerDraftStatus();
     for (const control of $('settingsForm').elements) control.disabled = !available || active;
     if (available && !active) {
       const fanoutOnly = $('fanout').checked && $('fanoutOnly').checked;
@@ -124,13 +135,14 @@
     $('routingModeTag').textContent = fanoutOnlyMode ? 'FANOUT' : (smartMode ? 'SMART' : 'DIRECT');
     $('downloadSes').disabled = !connected || !outputAvailable('ses') || active;
     $('downloadDsn').disabled = !connected || !outputAvailable('dsn') || active;
-    $('downloadDsn').firstChild.textContent = job?.routingCleared && job.state === 'ready' ? 'Unrouted DSN ' : 'Routed DSN ';
+    $('downloadDsn').firstChild.textContent = job?.state === 'ready' ? (job.routingCleared ? 'Unrouted DSN ' : (job.layerRulesChanged ? 'Board DSN ' : 'Routed DSN ')) : 'Routed DSN ';
     $('downloadChecks').disabled = !connected || !outputAvailable('report') || active;
     $('downloadLog').disabled = !connected || !job;
     $('copyLog').disabled = !lastLogs;
     $('runLabel').textContent = $('fanout').checked && $('fanoutOnly').checked ? 'Run SMD escape' : (job && terminalStates.has(job.state) ? 'Route again' : 'Start routing');
     let hint = !job ? 'Load a board to begin.' : (active ? 'Routing in a local browser worker.' : (job.routingCleared ? 'Runs from the cleared input board.' : 'Runs from the original input board.'));
     if (job?.state === 'clearing') hint = 'Removing routes and checking your board…';
+    if (job?.state === 'updating_rules') hint = 'Applying net layers and checking your input board…';
     if (busy) hint = 'Preparing your board…';
     if (stopping) hint = forcedStop ? 'Force stop requested.' : 'Finishing the current operation…';
     if (!connected) hint = 'Waiting for the browser engine.';
@@ -453,9 +465,16 @@
       } else if (job?.clearError) toast(`Routing could not be cleared. Your previous board and results are kept. ${job.clearError}`, true);
       else toast('Clearing cancelled. Your previous board and results are kept.');
     }
+    if (previousJob?.state === 'updating_rules' && job?.state !== 'updating_rules') {
+      if (job?.id === previousJob.id && job.state === 'ready') {
+        $('showAirwires').checked = true;
+        toast('Net routing layers applied. Review your input board, then choose Start routing.');
+      } else if (job?.ruleError) toast(`Layer rules could not be applied. Your previous board and results are kept. ${job.ruleError}`, true);
+      else toast('Layer changes cancelled. Your previous board and results are kept.');
+    }
     const hasJob = Boolean(job && job.state !== 'idle');
     const active = isActive();
-    if (job?.settings && job.state !== 'ready' && job.state !== 'inspecting' && job.state !== 'clearing' && previousJob?.state !== 'clearing' && (firstState || job.id !== lastJobId)) {
+    if (job?.settings && !['ready', 'inspecting', 'clearing', 'updating_rules'].includes(job.state) && !['clearing', 'updating_rules'].includes(previousJob?.state) && (firstState || job.id !== lastJobId)) {
       for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad']) if (typeof job.settings[key] === 'boolean') $(key).checked = job.settings[key];
       for (const key of ['maxPasses', 'timeoutMinutes']) if (typeof job.settings[key] === 'number') $(key).value = job.settings[key];
     }
@@ -467,7 +486,7 @@
     if (hasJob) {
       $('fileName').textContent = job.name || 'Untitled board';
       $('fileName').title = job.name || 'Untitled board';
-      $('fileDetail').textContent = job.state === 'inspecting' ? 'Reading design…' : (job.state === 'clearing' ? 'Clearing routing…' : (job.routingCleared ? 'Cleared input DSN' : 'Original DSN loaded'));
+      $('fileDetail').textContent = job.state === 'inspecting' ? 'Reading design…' : (job.state === 'clearing' ? 'Clearing routing…' : (job.state === 'updating_rules' ? 'Updating net layers…' : (job.routingCleared ? 'Cleared input DSN' : (job.layerRulesChanged ? 'Input DSN · edited net layers' : 'Original DSN loaded'))));
       document.title = `${job.name || 'Board'} · RamenRouter`;
     }
     const completedWithRuleIssues = job?.state === 'completed' && (job.stats?.totalViolations ?? job.stats?.clearanceViolations ?? 0) > 0;
@@ -779,6 +798,117 @@
     finally { busy = false; updateControls(); }
   }
 
+  function sameLayerSelection(selected, layers) {
+    return selected.size === layers.length && layers.every(layer => selected.has(layer));
+  }
+
+  function updateNetLayerDraftStatus() {
+    if (!netLayersData) return;
+    let changed = 0, invalid = 0, inaccessible = 0, visible = 0;
+    const query = $('netLayerSearch').value.trim().toLocaleLowerCase();
+    const unavailable = !connected || busy || isActive() || currentState?.job?.id !== netLayersData.jobId;
+    for (const net of netLayersData.nets) {
+      const selected = netLayerDrafts.get(net.id);
+      const row = net.row;
+      const edited = !sameLayerSelection(selected, net.allowedLayers);
+      const imported = sameLayerSelection(selected, net.importedLayers);
+      const unreachable = (net.padLayers || []).filter(layers => layers.length && !layers.some(layer => selected.has(layer))).length;
+      if (edited) changed++;
+      if (!selected.size) invalid++;
+      inaccessible += unreachable;
+      row.hidden = !String(net.name).toLocaleLowerCase().includes(query);
+      if (!row.hidden) visible++;
+      row.classList.toggle('net-layer-invalid', selected.size === 0);
+      row.classList.toggle('net-layer-edited', edited);
+      net.status.textContent = !selected.size ? 'Select at least one layer' : (imported ? 'Imported rule' : 'Custom layer rule');
+      net.padWarning.hidden = !unreachable;
+      net.padWarning.textContent = unreachable ? `${number(unreachable)} ${unreachable === 1 ? 'pad lies' : 'pads lie'} outside selected layers` : '';
+      net.reset.disabled = unavailable || imported;
+      for (const checkbox of row.querySelectorAll('input')) {
+        checkbox.disabled = unavailable;
+        checkbox.checked = selected.has(Number(checkbox.dataset.layerId));
+        checkbox.setAttribute('aria-invalid', String(!selected.size));
+      }
+    }
+    $('netLayerCount').textContent = `${number(visible)} of ${number(netLayersData.nets.length)} nets shown · ${number(changed)} ${changed === 1 ? 'change' : 'changes'} to apply`;
+    $('netLayerValidation').hidden = !invalid;
+    $('netLayerValidation').textContent = invalid ? `Select at least one layer for every net. ${number(invalid)} ${invalid === 1 ? 'net needs' : 'nets need'} a layer, including any hidden by your search.` : '';
+    $('netLayerPadWarning').hidden = !inaccessible;
+    $('netLayerPadWarning').textContent = inaccessible ? `${number(inaccessible)} ${inaccessible === 1 ? 'pad has' : 'pads have'} no selected layer in common. Vias in SMD pads may be needed to reach these nets. Check the pad layout and via rules; these selections may leave connections unrouted.` : '';
+    $('applyNetLayers').disabled = unavailable || invalid > 0 || changed === 0;
+    $('resetAllNetLayers').disabled = unavailable || netLayersData.nets.every(net => sameLayerSelection(netLayerDrafts.get(net.id), net.importedLayers));
+    $('netLayerSearch').disabled = unavailable;
+  }
+
+  function renderNetLayerRows() {
+    const heading = document.createElement('tr');
+    for (const name of ['Net', ...netLayersData.layers.map(layer => layer.name), 'Restore']) {
+      const th = document.createElement('th'); th.scope = 'col'; th.textContent = name; heading.append(th);
+    }
+    $('netLayerHead').replaceChildren(heading);
+    const rows = document.createDocumentFragment();
+    for (const net of netLayersData.nets) {
+      const row = document.createElement('tr'); row.dataset.netId = String(net.id);
+      const name = document.createElement('th'); name.scope = 'row';
+      const label = document.createElement('span'); label.className = 'net-layer-name'; label.textContent = net.name;
+      const status = document.createElement('small'); status.className = 'net-layer-rule-status';
+      const warning = document.createElement('small'); warning.className = 'net-layer-row-warning';
+      name.append(label, status, warning); row.append(name);
+      for (const layer of netLayersData.layers) {
+        const cell = document.createElement('td');
+        const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.layerId = String(layer.id);
+        checkbox.setAttribute('aria-label', `${net.name}: ${layer.name}`);
+        checkbox.addEventListener('change', () => {
+          if (busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
+          const selected = netLayerDrafts.get(net.id);
+          if (checkbox.checked) selected.add(layer.id); else selected.delete(layer.id);
+          updateNetLayerDraftStatus();
+        });
+        cell.append(checkbox); row.append(cell);
+      }
+      const resetCell = document.createElement('td');
+      const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset';
+      reset.setAttribute('aria-label', `Reset ${net.name} to imported layers`);
+      reset.addEventListener('click', () => {
+        if (busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
+        netLayerDrafts.set(net.id, new Set(net.importedLayers)); updateNetLayerDraftStatus();
+      });
+      resetCell.append(reset); row.append(resetCell); rows.append(row);
+      net.row = row; net.status = status; net.padWarning = warning; net.reset = reset;
+    }
+    $('netLayerRows').replaceChildren(rows);
+    updateNetLayerDraftStatus();
+  }
+
+  async function openNetLayers() {
+    const jobId = currentState?.job?.id;
+    if (!jobId || !connected || busy || isActive()) return;
+    busy = true; updateControls();
+    try {
+      const data = await api('/api/net-layers');
+      if (currentState?.job?.id !== jobId || isActive() || data.jobId !== jobId) return;
+      netLayersData = { ...data, nets: [...data.nets].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true, sensitivity: 'base' })) };
+      netLayerDrafts = new Map(netLayersData.nets.map(net => [net.id, new Set(net.allowedLayers)]));
+      $('netLayerSearch').value = '';
+      renderNetLayerRows();
+      $('netLayersDialog').showModal();
+    } catch (error) { toast(error.message, true); }
+    finally { busy = false; updateControls(); if ($('netLayersDialog').open) $('netLayerSearch').focus(); }
+  }
+
+  async function applyNetLayers() {
+    const data = netLayersData;
+    if (!data || !connected || busy || isActive() || currentState?.job?.id !== data.jobId) return;
+    if (data.nets.some(net => !netLayerDrafts.get(net.id).size)) { updateNetLayerDraftStatus(); return; }
+    const changes = data.nets.filter(net => !sameLayerSelection(netLayerDrafts.get(net.id), net.allowedLayers)).map(net => ({ netId: net.id, layers: data.layers.filter(layer => netLayerDrafts.get(net.id).has(layer.id)).map(layer => layer.id) }));
+    if (!changes.length) return;
+    $('netLayersDialog').close();
+    busy = true; updateControls();
+    try { await post('/api/net-layers', { jobId: data.jobId, changes }); }
+    catch (error) { toast(`Layer rules were not applied. ${error.message}`, true); }
+    finally { busy = false; updateControls(); }
+  }
+
   async function upload(file) {
     if (!file || busy || isActive() || !connected) return;
     if (!/\.dsn$/i.test(file.name)) { toast('Choose a Specctra .dsn file exported from your PCB editor.', true); return; }
@@ -808,6 +938,17 @@
   $('cancelClearRouting').addEventListener('click', () => $('clearRoutingDialog').close());
   $('closeClearRouting').addEventListener('click', () => $('clearRoutingDialog').close());
   $('clearRoutingDialog').addEventListener('close', () => { clearRoutingJobId = null; });
+  $('netLayersButton').addEventListener('click', () => void openNetLayers());
+  $('applyNetLayers').addEventListener('click', () => void applyNetLayers());
+  $('cancelNetLayers').addEventListener('click', () => $('netLayersDialog').close());
+  $('closeNetLayers').addEventListener('click', () => $('netLayersDialog').close());
+  $('netLayersDialog').addEventListener('close', () => { netLayersData = null; netLayerDrafts.clear(); });
+  $('netLayerSearch').addEventListener('input', updateNetLayerDraftStatus);
+  $('resetAllNetLayers').addEventListener('click', () => {
+    if (!netLayersData || busy || isActive() || currentState?.job?.id !== netLayersData.jobId) return;
+    netLayerDrafts = new Map(netLayersData.nets.map(net => [net.id, new Set(net.importedLayers)]));
+    updateNetLayerDraftStatus();
+  });
   $('fileInput').addEventListener('change', event => void upload(event.target.files[0]));
   for (const eventName of ['dragenter', 'dragover']) document.addEventListener(eventName, event => {
     event.preventDefault(); if (connected && !isActive() && !busy) $('dropzone').classList.add('drag-over');
@@ -879,7 +1020,7 @@
   canvas.addEventListener('pointerleave', () => { $('cursorPosition').textContent = 'Drag to pan · scroll to zoom'; });
   canvas.addEventListener('dblclick', fitBoard);
   document.addEventListener('keydown', event => {
-    if (event.target.matches('input,textarea,select') || $('aboutDialog').open || $('clearRoutingDialog').open || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (event.target.matches('input,textarea,select') || $('aboutDialog').open || $('clearRoutingDialog').open || $('netLayersDialog').open || event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.key.toLowerCase() === 'f') { event.preventDefault(); fitBoard(); }
   });
   restoreSettings();

@@ -1,12 +1,12 @@
 /* RamenRouter browser host. GPL-3.0-or-later. No server, runtime or network. */
 'use strict';
 (() => {
-  const active = new Set(['inspecting','starting','running','stopping','clearing']);
+  const active = new Set(['inspecting','starting','running','stopping','clearing','updating_rules']);
   const subscribers = new Set();
   let job = null, worker = null, workerUrl = null, inputText = null;
-  let board = null, preview = null, exports = null, bestChecked = null, clearTransaction = null, serial = 0, timer = null, watchdog = null;
+  let board = null, preview = null, exports = null, bestChecked = null, clearTransaction = null, ruleTransaction = null, importedNetLayers = null, serial = 0, timer = null, watchdog = null;
   const logs = [];
-  const base = {appVersion:'0.2.5',engineVersion:'Ramen JS 0.2.5',fanoutVersion:'Ramen SMD escape'};
+  const base = {appVersion:'0.2.6',engineVersion:'Ramen JS 0.2.6',fanoutVersion:'Ramen SMD escape'};
   function notify() { for (const fn of subscribers) { try { fn(state()); } catch (_) {} } }
   function log(message) {
     logs.push(new Date().toLocaleTimeString() + '  ' + String(message));
@@ -28,6 +28,37 @@
     return {traceCount:(b?.traces||[]).length,viaCount:(b?.vias||[]).length,
       fixedTraceCount:(b?.traces||[]).filter(t=>t.fixed).length,fixedViaCount:(b?.vias||[]).filter(v=>v.fixed).length};
   }
+  function netLayerSettings(b) {
+    const layers=(b?.layers||[]).map(layer=>({id:layer.index,name:layer.name})),all=layers.map(layer=>layer.id);
+    const padsByNet=new Map();
+    for(const pad of b?.pads||[]) {
+      if(!padsByNet.has(pad.net))padsByNet.set(pad.net,[]);
+      padsByNet.get(pad.net).push([...new Set(pad.shapes.map(shape=>shape.layer))]);
+    }
+    const nets=(b?.nets||[]).map(net=>({id:net.id,name:net.name,
+      allowedLayers:[...(net.useLayers||all)],importedLayers:[...(importedNetLayers?.[net.id]||net.useLayers||all)],
+      padLayers:padsByNet.get(net.id)||[]}));
+    return {jobId:job?.id,layers,nets};
+  }
+  function updateLayerRules() {
+    if(!job||!board)return;
+    const settings=netLayerSettings(board),nets=new Map(settings.nets.map(net=>[net.id,net]));
+    const same=(a,b)=>a.length===b.length&&a.every(layer=>b.includes(layer));
+    job.layerRulesChanged=settings.nets.some(net=>!same(net.allowedLayers,net.importedLayers));
+    job.layerRuleSummary={restrictedNets:settings.nets.filter(net=>net.allowedLayers.length<settings.layers.length).length,
+      totalNets:settings.nets.length,
+      conflictingTraces:(board.traces||[]).filter(trace=>nets.has(trace.net)&&!nets.get(trace.net).allowedLayers.includes(trace.layer)).length,
+      inaccessiblePads:settings.nets.reduce((count,net)=>count+net.padLayers.filter(layers=>!layers.some(layer=>net.allowedLayers.includes(layer))).length,0)};
+  }
+  function restoreBeforeRules(message,error=null) {
+    kill();
+    const saved=ruleTransaction;ruleTransaction=null;
+    if(saved) {
+      job={...saved.job,ruleError:error};board=saved.board;preview=saved.preview;
+      exports=saved.exports;bestChecked=saved.bestChecked;inputText=saved.inputText;
+    }
+    log(message);notify();return state();
+  }
   function restoreBeforeClear(message,error=null) {
     kill();
     const saved=clearTransaction;clearTransaction=null;
@@ -39,10 +70,11 @@
   }
   function stopWithBest(reason,message) {
     if(clearTransaction)return restoreBeforeClear(message+' Routing was not cleared; the previous board is unchanged.');
+    if(ruleTransaction)return restoreBeforeRules(message+' Layer rules were not changed; the previous board is unchanged.');
     kill();job.stopReason=reason;job.state=reason;job.phase=reason;job.endedAt=Date.now();job.suggestions={};
     if(bestChecked) {
       board=bestChecked.board;preview=bestChecked.preview;exports=bestChecked.exports;
-      job.stats={...bestChecked.stats};job.routingSummary=routingSummary(board);job.advice=bestChecked.advice;job.hasOutput=true;job.revision++;
+      job.stats={...bestChecked.stats};job.routingSummary=routingSummary(board);updateLayerRules();job.advice=bestChecked.advice;job.hasOutput=true;job.revision++;
       log(message+' Best checked result retained: '+job.stats.unrouted+' incomplete.');
     } else {
       board=null;preview=null;exports=null;job.stats=null;job.routingSummary=null;job.advice={items:[]};job.hasOutput=false;
@@ -78,7 +110,7 @@
         if(!via||!Number.isFinite(via.diameter)||via.diameter<=0||!Number.isInteger(via.fromLayer)||!Number.isInteger(via.toLayer)||via.fromLayer>=via.toLayer||!copperLayers.has(via.fromLayer)||!copperLayers.has(via.toLayer))continue;
         if(b.viaAtSmd&&via.attachAllowed)continue;
         const permitted=(net.useLayers||[...copperLayers]).filter(value=>copperLayers.has(value)&&value>=via.fromLayer&&value<=via.toLayer);
-        if(permitted.includes(layer)&&new Set(permitted).size>1)candidates.add(net.id);
+        if(layer>=via.fromLayer&&layer<=via.toLayer&&permitted.some(value=>value!==layer))candidates.add(net.id);
       }
       return candidates;
     }
@@ -86,7 +118,7 @@
       const c=geo.connectivity(b),v=full?geo.validate(b):null;
       let length=0; for(const t of b.traces||[]) for(let i=1;i<t.points.length;i++) length+=Math.hypot(t.points[i][0]-t.points[i-1][0],t.points[i][1]-t.points[i-1][1]);
       return {unrouted:c.unrouted,viaCount:(b.vias||[]).length,traceCount:(b.traces||[]).length,traceLengthMm:length*b.units.mmPerUnit,
-        clearanceViolations:v?v.clearanceViolations:null,totalViolations:v?(v.totalViolations??v.clearanceViolations):null,viaInPadViolations:v?v.viaInPadViolations:null,outlineViolations:v?v.outlineViolations:null,keepoutViolations:v?v.keepoutViolations:null,drcChecked:!!v,belowNominalWidthTraceCount:v?v.belowNominalWidthTraceCount:null,widthRulesChecked:!!v,
+        inactiveLayerViolations:v?v.violations.filter(issue=>issue.type==='inactive_layer').length:null,clearanceViolations:v?v.clearanceViolations:null,totalViolations:v?(v.totalViolations??v.clearanceViolations):null,viaInPadViolations:v?v.viaInPadViolations:null,outlineViolations:v?v.outlineViolations:null,keepoutViolations:v?v.keepoutViolations:null,drcChecked:!!v,belowNominalWidthTraceCount:v?v.belowNominalWidthTraceCount:null,widthRulesChecked:!!v,
         netCount:b.nets.length,componentCount:new Set(b.pads.map(p=>p.component)).size,layerCount:b.layers.length};
     }
     function geometry(b) {
@@ -109,12 +141,12 @@
     function checkedResult(result,initialBoard,options,name,initialStats,finalStats,fromInput=false,includeIncomplete=!options.fanoutOnly) {
       const report=geo.validate(result),advice=placementAdvice(result,initialBoard,includeIncomplete);
       return {board:result,preview:geometry(result),stats:finalStats,advice,fromInput,
-        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.5',settings:options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
+        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.6',settings:options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
     }
     self.onmessage=async event=>{
       const m=event.data;
       if(m.type==='stop') {cancelled=true;return;}
-      if(!['inspect','run','clear'].includes(m.type)) return;
+      if(!['inspect','run','clear','layer-rules'].includes(m.type)) return;
       try {
         cancelled=false;deadline=Date.now()+(m.options?.timeoutMinutes||30)*60000;
         const b=dsn.parse(m.text,m.name);
@@ -127,12 +159,24 @@
           result.exports.dsn=clearedInput;
           send({type:'cleared',clearedInput,warnings:cleared.warnings||[],...result});return;
         }
+        if(m.type==='layer-rules') {
+          const editedInput=dsn.setNetRoutingLayers(b,m.changes),edited=dsn.parse(editedInput,m.name),finalStats=stats(edited);
+          // Forbidden imported traces remain visible and checked. The user can
+          // widen the rule or deliberately clear routing before trying again.
+          const result=checkedResult(edited,edited,m.options,m.name,finalStats,finalStats,true,false);
+          result.exports.dsn=editedInput;
+          send({type:'rules-updated',editedInput,warnings:edited.warnings||[],...result});return;
+        }
         const initial=stats(b);
         // Build the fallback before routing starts. Stop never has to validate,
         // analyze or serialize copper on the UI thread after terminating work.
         const initialResult=checkedResult(b,b,m.options,m.name,initial,initial,true);
         send({type:'loaded',...initialResult,advice:placementAdvice(b,b,false),checkpointAdvice:initialResult.advice,warnings:b.warnings||[]});
         if(m.type==='inspect') {send({type:'ready'});return;}
+        if(initial.inactiveLayerViolations) {
+          const error=new Error(initial.inactiveLayerViolations+' imported trace(s) use layers that are not allowed for their nets. Clear routing & start over, or change the net layer rules before routing.');
+          error.code='NET_LAYER_CONFLICT';throw error;
+        }
         // Capture the original permissions before routing. This only identifies
         // relevant options; it does not predict that an override will succeed.
         const padViaCandidates=m.options.viaInPad||m.options.fanoutOnly?new Set():restrictedSmdNets(b);
@@ -154,28 +198,47 @@
         const suggestions=endState==='completed'&&finalStats.unrouted>0&&padViaCandidates.size&&geo.connectivity(result).components.some(component=>component.groups.length>1&&padViaCandidates.has(component.net))?{viaInPad:true}:{};
         send({type:'done',state:endState,suggestions,...checkedResult(result,b,m.options,m.name,initial,finalStats),
           message:finalStats.unrouted===0?(finalStats.totalViolations?'All connections routed, but '+finalStats.totalViolations+' rule issue(s) remain. Review them in your PCB editor.':'All connections routed. Verify the exported session in your PCB editor.'):finalStats.unrouted+' connections remain; best checked result retained.'});
-      } catch(error) {send({type:'error',error:error.message||String(error),stack:error.stack||''});}
+      } catch(error) {send({type:'error',error:error.message||String(error),code:error.code,stack:error.stack||''});}
     };
   }
-  function launch(type,options) {
-    const clearing=type==='clear',saved=clearing?{job,board,preview,exports,bestChecked,inputText}:null;
-    const routingCleared=!!job?.routingCleared;
+  function launch(type,options,changes) {
+    const clearing=type==='clear',editingRules=type==='layer-rules',transactional=clearing||editingRules;
+    const saved=transactional?{job,board,preview,exports,bestChecked,inputText}:null;
+    const routingCleared=!!job?.routingCleared,layerRulesChanged=!!job?.layerRulesChanged,layerRuleSummary=job?.layerRuleSummary||null;
     kill();
-    clearTransaction=saved;
-    if(!clearing) {exports=null;preview=null;board=null;bestChecked=null;}
+    clearTransaction=clearing?saved:null;ruleTransaction=editingRules?saved:null;
+    if(!transactional) {exports=null;preview=null;board=null;bestChecked=null;}
     const id=++serial;
     const source='"use strict";\n'+[createRamenDSN,createRamenGeometry,createRamenOptimizer,createRamenFanout,createRamenRouter,createRamenAdvisor,workerMain].map(fn=>fn.toString()).join('\n')+'\nworkerMain();';
-    job={id:String(id),name:job?.name||'board.dsn',state:clearing?'clearing':type==='inspect'?'inspecting':'starting',phase:clearing?'clearing':'loading',startedAt:Date.now(),settings:options,stats:clearing?saved.job.stats:null,initialStats:null,error:null,clearError:null,hasOutput:false,routingCleared,routingSummary:clearing?routingSummary(board):null,suggestions:{},advice:{items:[]},bestResult:{available:false},revision:0,pass:0};
+    job={id:String(id),name:job?.name||'board.dsn',state:clearing?'clearing':editingRules?'updating_rules':type==='inspect'?'inspecting':'starting',phase:clearing?'clearing':editingRules?'updating_rules':'loading',startedAt:Date.now(),settings:options,stats:transactional?saved.job.stats:null,initialStats:null,error:null,clearError:null,ruleError:null,hasOutput:false,routingCleared,layerRulesChanged,layerRuleSummary,routingSummary:transactional?routingSummary(board):null,suggestions:{},advice:{items:[]},bestResult:{available:false},revision:0,pass:0};
     try {
       workerUrl=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
       worker=new Worker(workerUrl);
     } catch(error) {
       if(clearing)restoreBeforeClear('Routing could not be cleared: '+error.message,error.message);
+      if(editingRules)restoreBeforeRules('Layer rules could not be updated: '+error.message,error.message);
       throw error;
     }
     worker.onmessage=e=>{
       if(id!==serial||!job||!active.has(job.state))return;
       const m=e.data;
+      if(editingRules) {
+        if(m.type==='error') {restoreBeforeRules('Layer rules could not be updated: '+m.error,m.error);return;}
+        if(m.type!=='rules-updated')return;
+        if(!m.board||!m.preview||!m.exports||!m.stats?.drcChecked||!m.stats?.widthRulesChecked||typeof m.editedInput!=='string') {
+          restoreBeforeRules('Layer rules could not be updated: the worker did not return a checked result.','The worker did not return a checked result.');return;
+        }
+        board=m.board;preview=m.preview;exports=m.exports;inputText=m.editedInput;
+        job.stats=m.stats;job.initialStats=m.stats;job.routingSummary=routingSummary(board);updateLayerRules();
+        job.advice=m.advice||{items:[]};job.hasOutput=true;
+        job.state='ready';job.phase='ready';job.endedAt=Date.now();job.revision++;
+        rememberChecked(m);ruleTransaction=null;kill();
+        log('Net layer rules updated. Existing input routing is retained. Start routing when ready.');
+        if(job.layerRuleSummary.conflictingTraces)log(job.layerRuleSummary.conflictingTraces+' imported trace(s) are on disallowed layers. Clear routing & start over, or change these rules.');
+        if(job.layerRuleSummary.inaccessiblePads)log(job.layerRuleSummary.inaccessiblePads+' pad(s) have no copper on a selected trace layer and may need a permitted via or a different layer selection.');
+        for(const warning of m.warnings||[])log('Input note: '+warning);
+        notify();return;
+      }
       if(clearing) {
         if(m.type==='error') {restoreBeforeClear('Routing could not be cleared: '+m.error,m.error);return;}
         if(m.type!=='cleared')return;
@@ -183,7 +246,7 @@
           restoreBeforeClear('Routing could not be cleared: the worker did not return a checked, empty result.','The worker did not return a checked, empty result.');return;
         }
         board=m.board;preview=m.preview;exports=m.exports;inputText=m.clearedInput;
-        job.stats=m.stats;job.initialStats=m.stats;job.routingSummary=routingSummary(board);
+        job.stats=m.stats;job.initialStats=m.stats;job.routingSummary=routingSummary(board);updateLayerRules();
         job.advice=m.advice||{items:[]};job.hasOutput=true;job.routingCleared=true;
         job.state='ready';job.phase='ready';job.endedAt=Date.now();job.revision++;
         rememberChecked(m);clearTransaction=null;kill();
@@ -192,12 +255,14 @@
       }
       if(m.type==='checkpoint') {rememberChecked(m);notify();return;}
       if(m.message)log(m.message);
-      if(m.board) {board=m.board;job.routingSummary=routingSummary(board);}
+      if(m.board) {board=m.board;job.routingSummary=routingSummary(board);updateLayerRules();}
       if(m.preview) {preview=m.preview;job.revision++;}
       if(m.stats)job.stats={...job.stats,...m.stats};
       if(m.phase)job.phase=m.phase;
       if(m.pass!==undefined)job.pass=m.pass;
       if(m.type==='loaded') {
+        if(importedNetLayers===null)importedNetLayers=Object.fromEntries(netLayerSettings(board).nets.map(net=>[net.id,net.allowedLayers.slice()]));
+        updateLayerRules();
         job.initialStats=m.stats;
         rememberChecked({...m,advice:m.checkpointAdvice||m.advice});
         job.advice=m.advice||{items:[]};
@@ -213,12 +278,12 @@
         log('Checked result: '+job.stats.unrouted+' incomplete, '+(job.stats.totalViolations??job.stats.clearanceViolations)+' rule issues, '+job.stats.belowNominalWidthTraceCount+' undersized traces.');
         kill();
       }
-      if(m.type==='error') {job.state='error';job.phase='error';job.error=m.error;job.endedAt=Date.now();log('Error: '+m.error);if(m.stack)log(m.stack);kill();}
+      if(m.type==='error') {if(m.code==='NET_LAYER_CONFLICT'&&bestChecked?.fromInput){board=bestChecked.board;preview=bestChecked.preview;exports=bestChecked.exports;job.stats={...bestChecked.stats};job.routingSummary=routingSummary(board);updateLayerRules();job.advice=bestChecked.advice;job.hasOutput=true;job.revision++;}job.state='error';job.phase='error';job.error=m.error;job.endedAt=Date.now();log('Error: '+m.error);if(m.stack)log(m.stack);kill();}
       notify();
     };
-    worker.onerror=e=>{if(id!==serial||!job||!active.has(job.state))return;const message=e.message||'Browser worker failed to start. Use a current Chrome, Edge or Firefox browser.';if(clearing){restoreBeforeClear('Routing could not be cleared: '+message,message);return;}job.error=message;job.state='error';job.phase='error';job.endedAt=Date.now();log(job.error);kill();notify();};
-    try {worker.postMessage({type,text:inputText,name:job.name,options});}
-    catch(error) {if(clearing)restoreBeforeClear('Routing could not be cleared: '+error.message,error.message);throw error;}
+    worker.onerror=e=>{if(id!==serial||!job||!active.has(job.state))return;const message=e.message||'Browser worker failed to start. Use a current Chrome, Edge or Firefox browser.';if(clearing){restoreBeforeClear('Routing could not be cleared: '+message,message);return;}if(editingRules){restoreBeforeRules('Layer rules could not be updated: '+message,message);return;}job.error=message;job.state='error';job.phase='error';job.endedAt=Date.now();log(job.error);kill();notify();};
+    try {worker.postMessage({type,text:inputText,name:job.name,options,changes});}
+    catch(error) {if(clearing)restoreBeforeClear('Routing could not be cleared: '+error.message,error.message);if(editingRules)restoreBeforeRules('Layer rules could not be updated: '+error.message,error.message);throw error;}
     const timeLimit=type==='run'?options.timeoutMinutes*60000:120000;
     timer=setTimeout(()=>{if(id===serial&&job&&active.has(job.state))stopWithBest('timed_out','Time budget reached.');},timeLimit);
     watchdog=setTimeout(()=>{if(id===serial&&job&&active.has(job.state))stopWithBest('timed_out','The worker exceeded its time budget and was terminated.');},timeLimit+30000);
@@ -229,7 +294,7 @@
     requireIdle();if(typeof text!=='string'||!text.trim())throw new Error('The DSN file is empty.');
     if(text.length>64*1024*1024)throw new Error('The DSN file is larger than 64 MiB.');
     if(!/\.dsn$/i.test(name))throw new Error('Choose a Specctra .dsn file.');
-    inputText=text;job={name};logs.length=0;
+    inputText=text;job={name};importedNetLayers=null;logs.length=0;
     return launch('inspect',getSettings());
   }
   async function request(path,options={}) {
@@ -242,6 +307,29 @@
     if(endpoint==='/api/upload') {
       let text;if(typeof data==='string')text=data;else if(data instanceof Blob)text=await data.text();else if(data instanceof ArrayBuffer||ArrayBuffer.isView(data))text=new TextDecoder().decode(data);else throw new Error('Choose a DSN file.');
       return importText(text,params.get('name')||'board.dsn');
+    }
+    if(endpoint==='/api/net-layers') {
+      requireIdle();
+      if(!inputText||!board||!job)throw new Error('Load a board before choosing net layers.');
+      const method=String(options.method||'GET').toUpperCase();
+      if(method==='GET')return netLayerSettings(board);
+      if(method!=='POST')throw new Error('Layer rule changes require a confirmed POST action.');
+      if(typeof data?.jobId!=='string'||data.jobId!==job.id)throw new Error('The selected board changed. Review its layer rules again.');
+      if(!Array.isArray(data.changes))throw new Error('Choose the nets and their allowed layers.');
+      const settings=netLayerSettings(board),nets=new Map(settings.nets.map(net=>[net.id,net]));
+      const layerIds=new Set(settings.layers.map(layer=>layer.id)),seen=new Set();
+      for(const change of data.changes) {
+        if(!change||!Number.isInteger(change.netId)||!nets.has(change.netId))throw new Error('A selected net is unknown. Reload the net layer settings.');
+        if(seen.has(change.netId))throw new Error('Each net may only be changed once.');
+        seen.add(change.netId);
+        if(!Array.isArray(change.layers)||!change.layers.length)throw new Error('Every net needs at least one allowed layer.');
+        if(change.layers.some(layer=>!Number.isInteger(layer)||!layerIds.has(layer)))throw new Error('Choose only existing copper layers.');
+        if(new Set(change.layers).size!==change.layers.length)throw new Error('An allowed layer cannot be listed twice.');
+      }
+      const changes=data.changes.filter(change=>{const current=nets.get(change.netId).allowedLayers;return current.length!==change.layers.length||current.some(layer=>!change.layers.includes(layer));});
+      if(!changes.length)return state();
+      log('Updating net layer rules. The board will return to its input routing.');
+      return launch('layer-rules',getSettings(job.settings),changes);
     }
     if(endpoint==='/api/run') {
       requireIdle();if(!inputText)throw new Error('Load a board first.');const settings=getSettings(data||{});logs.length=0;
@@ -266,7 +354,7 @@
       const type=params.get('type')||'ses',result=getDownload(type);
       return {blob:result.blob,disposition:'attachment; filename="'+result.filename+'"'};
     }
-    if(endpoint==='/api/quit') {kill();serial++;job=null;board=null;preview=null;exports=null;bestChecked=null;clearTransaction=null;inputText=null;logs.length=0;notify();return state();}
+    if(endpoint==='/api/quit') {kill();serial++;job=null;board=null;preview=null;exports=null;bestChecked=null;clearTransaction=null;ruleTransaction=null;importedNetLayers=null;inputText=null;logs.length=0;notify();return state();}
     throw new Error('Unknown local action.');
   }
   function getDownload(type) {

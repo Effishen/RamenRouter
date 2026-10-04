@@ -277,10 +277,23 @@ function createRamenDSN() {
     }
     for(const def of board.viaDefs)if(viaAttachment.has(def.name))def.attachAllowed=def.attachAllowed&&viaAttachment.get(def.name);
     const viaRules = new Map(children(network,'via_rule').map(v => [v[1], atoms(v).slice(2).map(x => viaInfos.get(x) || x)]));
-    const netByName = new Map(), netByPin = new Map();
+    const netByName = new Map(), netByPin = new Map(), netLayerOverrides = new Map();
     for (const net of children(network,'net')) {
-      allowed(net,['pins'],'net ' + net[1]);
+      allowed(net,['pins','circuit'],'net ' + net[1]);
       if (netByName.has(net[1])) fail('Duplicate/subnet net name ' + net[1] + ' is not supported.');
+      const circuits = children(net,'circuit');
+      if (circuits.length > 1) fail('Multiple circuit constraints for net ' + net[1] + '.');
+      if (circuits.length) {
+        allowed(circuits[0],['use_layer'],'net circuit ' + net[1]);
+        const settings = children(circuits[0],'use_layer');
+        if (settings.length > 1) fail('Multiple use_layer constraints for net ' + net[1] + '.');
+        if (settings.length) {
+          if (children(settings[0]).length) fail('Nested use_layer constraints for net ' + net[1] + ' are not supported.');
+          const activeLayers = [...new Set(atoms(settings[0]).slice(1).flatMap(x => layerNumbers(x)))];
+          if (!activeLayers.length) fail('Net ' + net[1] + ' has no active routing layers.');
+          netLayerOverrides.set(net[1],activeLayers);
+        }
+      }
       const names = children(net,'pins').flatMap(p => atoms(p).slice(1));
       const item = { id: board.nets.length + 1, name: net[1], pins: names, width: defaultWidth, clearance: defaultClearance, className: 'default', clearanceClass: 'default', viaName: viaNames[0] || null, useLayers: everyLayer.slice() };
       board.nets.push(item); netByName.set(item.name,item);
@@ -325,6 +338,10 @@ function createRamenDSN() {
         Object.assign(net,rules,{ className: cls[1], clearanceClass, viaName: choices?.[0] || null, useLayers: [...new Set(activeLayers)] });
       }
     }
+    // Specctra circuit rules on a net override the class's routing layers.
+    // Keep the original class membership: splitting classes changes clearance
+    // relationships even when their numeric rules initially look identical.
+    for (const net of board.nets) if (netLayerOverrides.has(net.name)) net.useLayers = netLayerOverrides.get(net.name);
     board.crossClassClearance=defaultClearance;
     board.classClearances=Object.fromEntries(classClearances);
     // The board outline belongs to the default clearance class. The geometry
@@ -455,6 +472,30 @@ function createRamenDSN() {
     }
     return astWrite(ast)+'\n';
   }
+  function setNetRoutingLayers(board, changes) {
+    if (!board._ast) throw new Error('The original DSN syntax tree is required to change routing layers safely.');
+    if (!Array.isArray(changes)) throw new Error('Net routing layer changes must be a list.');
+    const ast = clone(board._ast), network = first(ast,'network');
+    if (!network) throw new Error('The original DSN network is missing.');
+    const netById = new Map(board.nets.map(net=>[net.id,net])), nodesByName = new Map(children(network,'net').map(net=>[net[1],net]));
+    const layerNames = new Map(board.layers.map(layer=>[layer.index,layer.name])), seen = new Set();
+    for (const change of changes) {
+      const net = change && netById.get(change.netId);
+      if (!net || !Number.isInteger(change.netId)) throw new Error('Unknown net in routing layer changes.');
+      if (seen.has(net.id)) throw new Error('Duplicate routing layer changes for net ' + net.name + '.');
+      seen.add(net.id);
+      if (!Array.isArray(change.layers) || !change.layers.length) throw new Error('Choose at least one routing layer for net ' + net.name + '.');
+      if (change.layers.some(layer=>!Number.isInteger(layer)||!layerNames.has(layer))) throw new Error('Unknown routing layer for net ' + net.name + '.');
+      const node = nodesByName.get(net.name);
+      if (!node) throw new Error('The original DSN is missing net ' + net.name + '.');
+      let circuit = first(node,'circuit');
+      if (!circuit) { circuit = ['circuit']; node.push(circuit); }
+      const layerRule = ['use_layer',...[...new Set(change.layers)].sort((a,b)=>a-b).map(layer=>layerNames.get(layer))];
+      const index = circuit.findIndex(child=>tag(child)==='use_layer');
+      if (index < 0) circuit.push(layerRule); else circuit[index] = layerRule;
+    }
+    return astWrite(ast)+'\n';
+  }
   function exportDsn(board, filename = board.filename || board.name || 'board.dsn') {
     if (!board._ast) throw new Error('The original DSN syntax tree is required for lossless rule export.');
     const ast = clone(board._ast), netNames = new Map(board.nets.map(net=>[net.id,net.name]));
@@ -560,10 +601,10 @@ function createRamenDSN() {
       if(node.length>2)network.push(node);
     }
     const sessionName=/\.dsn$/i.test(filename)?filename.replace(/\.dsn$/i,'.ses'):filename+'.ses';
-    const session=['session',sessionName,['base_design',filename],['placement',['resolution',board.units.name,String(resolution)]],['routes',['resolution',board.units.name,String(resolution)],['parser',['host_cad','RamenRouter JavaScript'],['host_version','0.2.5']],library,network]];
+    const session=['session',sessionName,['base_design',filename],['placement',['resolution',board.units.name,String(resolution)]],['routes',['resolution',board.units.name,String(resolution)],['parser',['host_cad','RamenRouter JavaScript'],['host_version','0.2.6']],library,network]];
     return astWrite(session)+'\n';
   }
-  return { parse, exportSes, exportDsn, exportSesReport, clearRoutingDsn };
+  return { parse, exportSes, exportDsn, exportSesReport, clearRoutingDsn, setNetRoutingLayers };
 }
 if (typeof globalThis !== 'undefined') globalThis.createRamenDSN = createRamenDSN;
 if (typeof module !== 'undefined' && module.exports) module.exports = { createRamenDSN };
