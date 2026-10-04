@@ -6,7 +6,7 @@
   let job = null, worker = null, workerUrl = null, inputText = null;
   let board = null, preview = null, exports = null, bestChecked = null, clearTransaction = null, ruleTransaction = null, importedNetLayers = null, serial = 0, timer = null, watchdog = null;
   const logs = [];
-  const base = {appVersion:'0.2.9',engineVersion:'Ramen JS 0.2.9',fanoutVersion:'Ramen SMD escape'};
+  const base = {appVersion:'0.2.10',engineVersion:'Ramen JS 0.2.10',fanoutVersion:'Ramen SMD escape'};
   function notify() { for (const fn of subscribers) { try { fn(state()); } catch (_) {} } }
   function log(message) {
     logs.push(new Date().toLocaleTimeString() + '  ' + String(message));
@@ -95,6 +95,7 @@
     const dsn=createRamenDSN(), geo=createRamenGeometry(), advisor=createRamenAdvisor(geo), router=createRamenRouter(geo,createRamenOptimizer(geo),createRamenFanout(geo));
     let cancelled=false,deadline=Infinity;
     const send=(data)=>self.postMessage(data);
+    const stage=(phase,message,activity={},writeLog=true)=>send({type:'progress',phase,message,activity,log:writeLog});
     function placementAdvice(b,initialBoard,includeIncomplete) {
       try {return advisor.analyze(b,{initialBoard,includeIncomplete});}
       catch(error) {send({type:'progress',message:'Placement advice unavailable: '+(error.message||String(error))});return {items:[]};}
@@ -114,15 +115,15 @@
       }
       return candidates;
     }
-    function stats(b,full=true) {
-      const c=geo.connectivity(b),v=full?geo.validate(b):null;
+    function stats(b,full=true,connection=null,validation=null) {
+      const c=connection||geo.connectivity(b),v=full?(validation||geo.validate(b)):null;
       let length=0; for(const t of b.traces||[]) for(let i=1;i<t.points.length;i++) length+=Math.hypot(t.points[i][0]-t.points[i-1][0],t.points[i][1]-t.points[i-1][1]);
       return {unrouted:c.unrouted,viaCount:(b.vias||[]).length,traceCount:(b.traces||[]).length,traceLengthMm:length*b.units.mmPerUnit,
         inactiveLayerViolations:v?v.violations.filter(issue=>issue.type==='inactive_layer').length:null,clearanceViolations:v?v.clearanceViolations:null,totalViolations:v?(v.totalViolations??v.clearanceViolations):null,viaInPadViolations:v?v.viaInPadViolations:null,outlineViolations:v?v.outlineViolations:null,keepoutViolations:v?v.keepoutViolations:null,drcChecked:!!v,belowNominalWidthTraceCount:v?v.belowNominalWidthTraceCount:null,widthRulesChecked:!!v,
         netCount:b.nets.length,componentCount:new Set(b.pads.map(p=>p.component)).size,layerCount:b.layers.length};
     }
-    function geometry(b) {
-      const s=b.units.mmPerUnit,p=([x,y])=>[x*s,y*s],name=n=>b.nets.find(n2=>n2.id===n)?.name||'';
+    function geometry(b,connection=null) {
+      const s=b.units.mmPerUnit,p=([x,y])=>[x*s,y*s],names=new Map(b.nets.map(net=>[net.id,net.name])),name=n=>names.get(n)||'';
       const pads=[];
       for(const pad of b.pads) for(const sh of pad.shapes) {
         const item={layer:sh.layer,x:pad.x*s,y:pad.y*s,component:pad.component,net:name(pad.net)};
@@ -130,7 +131,7 @@
         else {item.points=sh.points.map(p);item.radius=0;}
         pads.push(item);
       }
-      const air=geo.connectivity(b).airwires||[];
+      const air=(connection||geo.connectivity(b)).airwires||[];
       return {units:'mm',bounds:[b.bounds.minX*s,b.bounds.minY*s,b.bounds.maxX*s,b.bounds.maxY*s],
         layers:b.layers.map(l=>({id:l.index,name:l.name,signal:true})),
         traces:(b.traces||[]).map(t=>({layer:t.layer,width:t.width*s,points:t.points.map(p),net:name(t.net)})),pads,
@@ -138,10 +139,14 @@
         outlines:(b.outlines||[]).map(poly=>poly.map(p)),
         airwires:air.map(a=>({net:name(a.net),points:(a.points||[a.from,a.to]).map(p)}))};
     }
-    function checkedResult(result,initialBoard,options,name,initialStats,finalStats,fromInput=false,includeIncomplete=!options.fanoutOnly) {
-      const report=geo.validate(result),advice=placementAdvice(result,initialBoard,includeIncomplete);
-      return {board:result,preview:geometry(result),stats:finalStats,advice,fromInput,
-        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.9',settings:options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
+    function checkedResult(result,initialBoard,options,name,initialStats,finalStats,fromInput=false,includeIncomplete=!options.fanoutOnly,prepared=null,writeLog=false) {
+      stage('checking','Checking clearances and trace widths for a saved result.',{},writeLog);
+      const report=prepared?.validation||geo.validate(result);
+      stage('advising','Reviewing remaining connections and placement advice.',{},writeLog);
+      const advice=placementAdvice(result,initialBoard,includeIncomplete);
+      stage('exporting','Preparing the checked preview and downloadable results.',{},writeLog);
+      return {board:result,preview:geometry(result,prepared?.connection),stats:finalStats,advice,fromInput,
+        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.10',settings:options,units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
     }
     self.onmessage=async event=>{
       const m=event.data;
@@ -149,13 +154,15 @@
       if(!['inspect','run','clear','layer-rules'].includes(m.type)) return;
       try {
         cancelled=false;deadline=Date.now()+(m.options?.timeoutMinutes||30)*60000;
+        stage('reading','Reading the DSN board and its routing rules.');
         const b=dsn.parse(m.text,m.name);
+        stage('checking','Loaded '+b.nets.length+' nets, '+b.pads.length+' pads and '+b.layers.length+' copper layers. Checking the input board.');
         if(m.type==='clear') {
           // No host state changes until parsing, geometry checks, preview and
           // exports have all succeeded in this worker.
           const clearedInput=dsn.clearRoutingDsn(b),cleared=dsn.parse(clearedInput,m.name),finalStats=stats(cleared);
           if(cleared.traces.length||cleared.vias.length)throw new Error('The design still contains routing after clearing.');
-          const result=checkedResult(cleared,cleared,m.options,m.name,finalStats,finalStats,true,false);
+          const result=checkedResult(cleared,cleared,m.options,m.name,finalStats,finalStats,true,false,null,true);
           result.exports.dsn=clearedInput;
           send({type:'cleared',clearedInput,warnings:cleared.warnings||[],...result});return;
         }
@@ -163,14 +170,14 @@
           const editedInput=dsn.setNetRoutingLayers(b,m.changes),edited=dsn.parse(editedInput,m.name),finalStats=stats(edited);
           // Forbidden imported traces remain visible and checked. The user can
           // widen the rule or deliberately clear routing before trying again.
-          const result=checkedResult(edited,edited,m.options,m.name,finalStats,finalStats,true,false);
+          const result=checkedResult(edited,edited,m.options,m.name,finalStats,finalStats,true,false,null,true);
           result.exports.dsn=editedInput;
           send({type:'rules-updated',editedInput,warnings:edited.warnings||[],...result});return;
         }
-        const initial=stats(b);
+        const inputConnection=geo.connectivity(b),inputValidation=geo.validate(b),initial=stats(b,true,inputConnection,inputValidation);
         // Build the fallback before routing starts. Stop never has to validate,
         // analyze or serialize copper on the UI thread after terminating work.
-        const initialResult=checkedResult(b,b,m.options,m.name,initial,initial,true);
+        const initialResult=checkedResult(b,b,m.options,m.name,initial,initial,true,!m.options.fanoutOnly,{connection:inputConnection,validation:inputValidation},true);
         send({type:'loaded',...initialResult,advice:placementAdvice(b,b,false),checkpointAdvice:initialResult.advice,warnings:b.warnings||[]});
         if(m.type==='inspect') {send({type:'ready'});return;}
         if(initial.inactiveLayerViolations) {
@@ -185,18 +192,20 @@
           if(typeof message==='string') {send({type:'progress',message});return;}
           if(message.type==='checkpoint') {
             const fromInput=message.stats.traceCount===initial.traceCount&&message.stats.viaCount===initial.viaCount&&message.stats.unrouted===initial.unrouted;
-            send({type:'checkpoint',...checkedResult(message.board,b,m.options,m.name,initial,message.stats,fromInput),pass:message.pass});return;
+            send({type:'checkpoint',...checkedResult(message.board,b,m.options,m.name,initial,message.stats,fromInput),phase:message.phase,pass:message.pass});return;
           }
-          const data={type:'progress',phase:message.phase,pass:message.pass,message:message.message};
-          if(message.board && Date.now()-lastPreview>750) {
-            lastPreview=Date.now();data.board=message.board;data.preview=geometry(message.board);data.stats=stats(message.board,false);
+          const data={type:'progress',phase:message.phase,pass:message.pass,message:message.message,activity:message.activity,log:message.log};
+          if(message.board && Date.now()-lastPreview>1200) {
+            const connection=geo.connectivity(message.board);
+            lastPreview=Date.now();data.board=message.board;data.preview=geometry(message.board,connection);data.stats=message.stats||stats(message.board,false,connection);
           } else if(message.stats) data.stats=message.stats;
           send(data);
         },()=>cancelled||Date.now()>=deadline);
-        const result=out?.board||out||b, finalStats=stats(result);
+        stage('checking','Routing search finished. Checking the retained result.');
+        const result=out?.board||out||b,finalConnection=geo.connectivity(result),finalValidation=geo.validate(result),finalStats=stats(result,true,finalConnection,finalValidation);
         const endState=Date.now()>=deadline?'timed_out':(cancelled||out?.stopped?'stopped':'completed');
-        const suggestions=endState==='completed'&&finalStats.unrouted>0&&padViaCandidates.size&&geo.connectivity(result).components.some(component=>component.groups.length>1&&padViaCandidates.has(component.net))?{viaInPad:true}:{};
-        send({type:'done',state:endState,suggestions,...checkedResult(result,b,m.options,m.name,initial,finalStats),
+        const suggestions=endState==='completed'&&finalStats.unrouted>0&&padViaCandidates.size&&finalConnection.components.some(component=>component.groups.length>1&&padViaCandidates.has(component.net))?{viaInPad:true}:{};
+        send({type:'done',state:endState,suggestions,...checkedResult(result,b,m.options,m.name,initial,finalStats,false,!m.options.fanoutOnly,{connection:finalConnection,validation:finalValidation},true),
           message:finalStats.unrouted===0?(finalStats.totalViolations?'All connections routed, but '+finalStats.totalViolations+' rule issue(s) remain. Review them in your PCB editor.':'All connections routed. Verify the exported session in your PCB editor.'):finalStats.unrouted+' connections remain; best checked result retained.'});
       } catch(error) {send({type:'error',error:error.message||String(error),code:error.code,stack:error.stack||''});}
     };
@@ -211,6 +220,8 @@
     const id=++serial;
     const source='"use strict";\n'+[createRamenDSN,createRamenGeometry,createRamenOptimizer,createRamenFanout,createRamenRouter,createRamenAdvisor,workerMain].map(fn=>fn.toString()).join('\n')+'\nworkerMain();';
     job={id:String(id),name:job?.name||'board.dsn',state:clearing?'clearing':editingRules?'updating_rules':type==='inspect'?'inspecting':'starting',phase:clearing?'clearing':editingRules?'updating_rules':'loading',startedAt:Date.now(),settings:options,stats:transactional?saved.job.stats:null,initialStats:null,error:null,clearError:null,ruleError:null,hasOutput:false,routingCleared,layerRulesChanged,layerRuleSummary,routingSummary:transactional?routingSummary(board):null,suggestions:{},advice:{items:[]},bestResult:{available:false},revision:0,pass:0};
+    job.lastEngineUpdateAt=null;
+    job.activity={message:'Starting browser worker…',phase:job.phase,updatedAt:job.startedAt,source:'host'};
     try {
       workerUrl=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
       worker=new Worker(workerUrl);
@@ -222,6 +233,9 @@
     worker.onmessage=e=>{
       if(id!==serial||!job||!active.has(job.state))return;
       const m=e.data;
+      job.lastEngineUpdateAt=Date.now();
+      if(m.message)job.activity={...(m.activity||{}),message:String(m.message),phase:m.phase||job.phase,updatedAt:job.lastEngineUpdateAt,source:'engine'};
+      if(m.type==='progress'&&transactional){if(m.message&&m.log!==false)log(m.message);notify();return;}
       if(editingRules) {
         if(m.type==='error') {restoreBeforeRules('Layer rules could not be updated: '+m.error,m.error);return;}
         if(m.type!=='rules-updated')return;
@@ -253,8 +267,14 @@
         log('All traces and routing vias cleared. Components, pads, connections and design rules are unchanged. Ready to route again.');
         notify();return;
       }
-      if(m.type==='checkpoint') {rememberChecked(m);notify();return;}
-      if(m.message)log(m.message);
+      if(m.type==='checkpoint') {
+        rememberChecked(m);
+        job.phase=m.phase||'routing';
+        job.activity={message:'Saved checked result: '+m.stats.unrouted+' connections remaining.',phase:m.phase||'routing',updatedAt:job.lastEngineUpdateAt,source:'engine'};
+        if(!job.lastCheckpointLogAt||Date.now()-job.lastCheckpointLogAt>=5000){log(job.activity.message);job.lastCheckpointLogAt=Date.now();}
+        notify();return;
+      }
+      if(m.message&&m.log!==false)log(m.message);
       if(m.board) {board=m.board;job.routingSummary=routingSummary(board);updateLayerRules();}
       if(m.preview) {preview=m.preview;job.revision++;}
       if(m.stats)job.stats={...job.stats,...m.stats};

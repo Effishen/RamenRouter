@@ -41,6 +41,13 @@ Use the board preview to zoom, pan and show or hide layers. The job overview
 shows progress and any connections still waiting to be routed. You can stop a
 job, adjust the settings and try again.
 
+During routing, the activity line and job log show what the engine is working
+on, including grid preparation, fanout, path searches and result checks. The
+last-update time tells you when the engine most recently reported progress.
+Animated connection guides extend and retract between pads while the job runs;
+they show pending connections, not newly routed tracks. Turn off **Airwires**
+to hide them. They also pause when your device prefers reduced motion.
+
 Already have a partly or fully routed DSN? Choose **Clear routing & start over**
 below the loaded filename. After you confirm, RamenRouter removes all traces
 and routing vias, including any fixed or protected ones. Components, pads,

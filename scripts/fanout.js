@@ -17,6 +17,10 @@ function createRamenFanout(geometry) {
     const board=copy(input),log=[],started=Date.now(),deadline=started+(options.timeoutMinutes||30)*60000;
     if(options.viaInPad){board.viaAtSmd=true;board.viaInPadApplied=true;for(const def of board.viaDefs)def.attachAllowed=true;}
     const cancelled=()=>isCancelled()||Date.now()>deadline;
+    let lastDetail=0;
+    const detail=(message,activity={},force=false)=>{const now=Date.now();if(!force&&now-lastDetail<1200)return;lastDetail=now;emit({type:'progress',phase:'fanout',message,activity});};
+    const pause=()=>new Promise(r=>setTimeout(r,0));
+    detail('Checking pads and existing copper for fanout',{stage:'fanout-prepare',processed:0,total:board.pads.length},true);await pause();
     const nets=new Map(board.nets.map(n=>[n.id,n])),defs=new Map(board.viaDefs.map(v=>[v.name,v]));
     const traceLayers=net=>net.useLayers||board.layers.map(l=>l.index);
     const padCounts=new Map(board.nets.map(n=>[n.id,board.pads.filter(p=>p.net===n.id).length]));
@@ -95,8 +99,10 @@ function createRamenFanout(geometry) {
       }
     }
     rows.sort((a,b)=>b.entries.length-a.entries.length);
-    let rowCount=0;
-    for(const row of rows){if(cancelled())break;
+    let rowCount=0,rowIndex=0;
+    detail('Preparing SMD escapes · '+shapes.length+' eligible pads · '+rows.length+' dense rows',{stage:'fanout-rows',processed:0,total:rows.length},true);
+    for(const row of rows){if(cancelled())break;rowIndex++;
+      detail('Preparing dense row '+rowIndex+'/'+rows.length+' · '+row.entries.length+' pads',{stage:'fanout-rows',processed:rowIndex,total:rows.length});
       const entries=row.entries.filter(e=>!attached.has(e.pad.id));if(entries.length<2)continue;
       const width=Math.max(...entries.map(e=>e.net.width)),normalHalf=Math.max(...entries.map(e=>e.geometry.longSpan/2));
       const pitch=Math.max(...entries.map(e=>defs.get(e.net.viaName).diameter+clearance(e.net.id)))+Math.max(.02,width*.025);
@@ -119,7 +125,7 @@ function createRamenFanout(geometry) {
             if(bundle.pads.length===entries.length)break;
           }
           if(best?.pads.length===entries.length)break;
-          await new Promise(r=>setTimeout(r,0));
+          detail('Trying dense-row escapes · row '+rowIndex+'/'+rows.length+' · '+(best?.pads.length||0)+'/'+entries.length+' pads placed',{stage:'fanout-row-escapes',processed:rowIndex,total:rows.length,placed:best?.pads.length||0,pads:entries.length});await pause();
         }
         if(best?.pads.length===entries.length)break;
       }
@@ -129,13 +135,15 @@ function createRamenFanout(geometry) {
         // need not put every via on the same normal-distance line.
         for(let i=0;i<entries.length;i++){
           if(cancelled()||Date.now()>rowDeadline)break;
-          await new Promise(r=>setTimeout(r,0));
-          const entry=entries[i];
-          for(const sign of [1,-1])for(const offsetFactor of [2,2.5,3,3.5,4,4.5,5,6,7,8,10,12])for(const deltaFactor of [-2,-1.5,-1,-.75,-.5,-.25,0,.25,.5,.75,1,1.5,2])for(const shoulderFactor of [.05,.3,.55]){
+          await pause();
+          const entry=entries[i];let candidates=0,lastCandidateYield=Date.now();
+          detail('Checking escape positions · '+entry.net.name+' · pad '+(i+1)+'/'+entries.length,{stage:'fanout-candidates',netId:entry.net.id,netName:entry.net.name,processed:i+1,total:entries.length});
+          candidateSearch:for(const sign of [1,-1])for(const offsetFactor of [2,2.5,3,3.5,4,4.5,5,6,7,8,10,12])for(const deltaFactor of [-2,-1.5,-1,-.75,-.5,-.25,0,.25,.5,.75,1,1.5,2])for(const shoulderFactor of [.05,.3,.55]){
             const normal=row.axis.map(v=>v*sign),offset=offsetFactor*width,t=entry.t+deltaFactor*width;
             const end=[row.axis[0]*(centerN+sign*offset)+row.tangent[0]*t,row.axis[1]*(centerN+sign*offset)+row.tangent[1]*t];
             const candidate=bundleFor(entry,end,normal,Math.min(entry.geometry.longSpan/2+width*shoulderFactor,offset));
             if(candidate&&legalBundle(candidate))choices[i].push(candidate);
+            if(++candidates%64===0){detail('Checking escape positions · '+entry.net.name+' · '+candidates+' candidates',{stage:'fanout-candidates',netId:entry.net.id,netName:entry.net.name,processed:i+1,total:entries.length,candidates});if(Date.now()-lastCandidateYield>=24){await pause();lastCandidateYield=Date.now();}if(cancelled())break candidateSearch;}
           }
         }
         const all=choices.map(list=>{const seen=new Set();return list.filter(b=>{const v=b.vias[0],k=[v.x,v.y,...b.traces.flatMap(t=>t.points.flat())].join('|');if(seen.has(k))return false;seen.add(k);b._primitives=itemPrimitives(b);return true;});});
@@ -158,7 +166,7 @@ function createRamenFanout(geometry) {
           if(++work>12000||cancelled()||Date.now()>rowDeadline){exhausted=true;return;}
           if(complete)return;
           if(!domains.length){complete=chosen;return;}
-          if(work%128===0)await new Promise(r=>setTimeout(r,0));
+          if(work%128===0){detail('Fitting dense-row escapes · row '+rowIndex+'/'+rows.length+' · '+work+' combinations checked',{stage:'fanout-combinations',processed:rowIndex,total:rows.length,combinations:work});await pause();}
           domains.sort((a,b)=>a.length-b.length);
           if(!domains[0].length)return;
           for(const candidate of domains[0]){
@@ -170,11 +178,13 @@ function createRamenFanout(geometry) {
         await searchChoices(all,[]);
         if(complete){best={traces:complete.flatMap(b=>b.traces),vias:complete.flatMap(b=>b.vias),pads:complete.flatMap(b=>b.pads)};}
       }
-      if(best&&best.pads.length){commit(best);rowCount++;emit({type:'progress',phase:'fanout',message:'Checked off-grid fanout: '+(board.vias.length-initialVias)+' new escape vias.'});}
+      if(best&&best.pads.length){commit(best);rowCount++;detail('Checked off-grid fanout · '+(board.vias.length-initialVias)+' new escape vias · row '+rowIndex+'/'+rows.length,{stage:'fanout-rows',processed:rowIndex,total:rows.length,addedVias:board.vias.length-initialVias});}
       await new Promise(r=>setTimeout(r,0));
     }
     // Compact isolated pads and enclosed thermal pads get a conservative local search.
-    for(const entry of shapes){if(cancelled())break;if(attached.has(entry.pad.id))continue;
+    let padIndex=0;detail('Checking remaining SMD pad escapes',{stage:'fanout-pads',processed:0,total:shapes.length},true);
+    for(const entry of shapes){if(cancelled())break;padIndex++;if(padIndex%32===0){detail('Checking SMD pads · '+padIndex+'/'+shapes.length,{stage:'fanout-pads',processed:padIndex,total:shapes.length});await pause();if(cancelled())break;}if(attached.has(entry.pad.id))continue;
+      detail('Trying pad escape · '+entry.net.name+' · '+padIndex+'/'+shapes.length,{stage:'fanout-pads',netId:entry.net.id,netName:entry.net.name,processed:padIndex,total:shapes.length});
       const box=G.shapeBounds(entry.shape),shortSpan=Math.min(box.maxX-box.minX,box.maxY-box.minY),net=entry.net,p=entry.pad;
       let neighbours=0;for(const q of allPadShapes)if(q.shape.layer===entry.shape.layer&&q.pad.net!==p.net&&G.distanceShapes(entry.shape,q.shape)<net.width+clearance(net.id))neighbours++;
       const padLayerAllowed=traceLayers(net).includes(entry.shape.layer);
@@ -186,6 +196,7 @@ function createRamenFanout(geometry) {
       if(found)commit(found);
       await new Promise(r=>setTimeout(r,0));
     }
+    detail('Checking completed fanout clearances and connectivity',{stage:'fanout-check',addedVias:board.vias.length-initialVias},true);await pause();
     const validation=G.validate(board);
     if(validation.totalViolations>baseValidation.totalViolations||validation.belowNominalWidthTraceCount>baseValidation.belowNominalWidthTraceCount){
       log.push('Fanout rejected: final geometric validation found new rule violations.');

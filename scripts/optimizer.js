@@ -14,13 +14,20 @@ function createRamenOptimizer(geometry) {
     return [[a,first,b],[a,second,b]];
   }
   async function optimize(input,options={},emit=()=>{},isCancelled=()=>false){
+    let lastDetail=0;
+    const detail=(message,activity={},force=false)=>{const now=Date.now();if(!force&&now-lastDetail<1200)return;lastDetail=now;emit({type:'progress',phase:'optimizing',message,activity});};
+    detail('Checking the route before refinement',{stage:'refinement-check'},true);await wait();
     let board=clone(input),base=G.validate(board),unrouted=G.connectivity(board).unrouted;
     const nets=new Map(board.nets.map(n=>[n.id,n])),edges=G.boundaryEdges(board);
     let changed=0,removed=0;
     const originalLength=board.traces.reduce((s,t)=>s+length(t.points),0);
     const maxClearance=Math.max(board.defaultClearance||0,...board.nets.map(n=>n.clearance||0));
+    let candidatesChecked=0,lastShortcutYield=Date.now();
     for(let index=0;index<board.traces.length&&!isCancelled();index++){
-      const trace=board.traces[index];if(trace.fixed||trace.points.length<3)continue;
+      const trace=board.traces[index];
+      detail('Refining paths · '+(index+1)+'/'+board.traces.length+' · '+(nets.get(trace.net)?.name||'unnamed net'),{stage:'refinement-traces',processed:index+1,total:board.traces.length,netId:trace.net,netName:nets.get(trace.net)?.name});
+      if(index%6===0){await wait();if(isCancelled())break;}
+      if(trace.fixed||trace.points.length<3)continue;
       const net=nets.get(trace.net),ownClear=net?.routingClearance??net?.clearance??0;
       const primitives=G.copper(board).primitives.filter(p=>p.layer===trace.layer&&p.net!==trace.net);
       const spatial=G.spatialIndex(primitives,Math.max((board.bounds.maxX-board.bounds.minX)/40,trace.width*4));
@@ -39,11 +46,12 @@ function createRamenOptimizer(geometry) {
       }
       const previous=trace.points,proposed=[previous[0]];
       let i=0;
-      while(i<previous.length-1){
+      refineTrace:while(i<previous.length-1){
         let chosen=null,end=i+1;
         for(let j=previous.length-1;j>i+1;j--){
           const old=length(previous.slice(i,j+1));
           for(const candidate of shortcuts(previous[i],previous[j])){
+            if(++candidatesChecked%128===0){detail('Trying shorter paths · '+(net?.name||'unnamed net')+' · trace '+(index+1)+'/'+board.traces.length+' · '+candidatesChecked+' shortcuts checked',{stage:'refinement-shortcuts',netId:trace.net,netName:net?.name,processed:index+1,total:board.traces.length,candidates:candidatesChecked});if(Date.now()-lastShortcutYield>=24){await wait();lastShortcutYield=Date.now();}if(isCancelled())break refineTrace;}
             if(length(candidate)>=old-EPS)continue;
             if(candidate.slice(1).every((p,k)=>safe(candidate[k],p))){chosen=candidate;end=j;break;}
           }
@@ -52,6 +60,7 @@ function createRamenOptimizer(geometry) {
         if(chosen)proposed.push(...chosen.slice(1));else proposed.push(previous[end]);
         i=end;
       }
+      if(isCancelled())break;
       const candidate=compact(proposed);
       if(length(candidate)<length(previous)-EPS){
         trace.points=candidate;
@@ -59,16 +68,21 @@ function createRamenOptimizer(geometry) {
         const next=G.connectivity(board).unrouted;
         if(next<=unrouted){changed++;unrouted=next;}else trace.points=previous;
       }
-      if(index%6===0){emit({type:'progress',phase:'optimizing',message:'Refining paths '+(index+1)+'/'+board.traces.length,board});await wait();}
+
     }
     // Remove electrically redundant generated vias, checking the complete copper graph.
+    const totalVias=board.vias.length;
+    detail('Checking redundant vias · '+totalVias+' vias',{stage:'refinement-vias',processed:0,total:totalVias},true);
     for(let index=board.vias.length-1;index>=0&&!isCancelled();index--){
+      detail('Checking redundant vias · '+(totalVias-index)+'/'+totalVias+' · '+removed+' removed',{stage:'refinement-vias',processed:totalVias-index,total:totalVias,removed});
+      if(index%8===0){await wait();if(isCancelled())break;}
       if(board.vias[index].fixed)continue;
       const via=board.vias[index];board.vias.splice(index,1);
       const next=G.connectivity(board).unrouted;
       if(next<=unrouted){removed++;unrouted=next;}else board.vias.splice(index,0,via);
-      if(index%8===0)await wait();
+
     }
+    detail('Checking refined route clearances and connectivity',{stage:'refinement-final-check',changed,removed},true);await wait();
     const checked=G.validate(board),beforeConnections=G.connectivity(input).unrouted;
     if(checked.totalViolations>base.totalViolations||checked.clearanceViolations>base.clearanceViolations||checked.belowNominalWidthTraceCount>base.belowNominalWidthTraceCount||unrouted>beforeConnections){
       emit({type:'progress',phase:'optimizing',message:'Refinement rejected by final rule/connectivity check; original checked board retained.'});return input;

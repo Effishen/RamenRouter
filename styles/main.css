@@ -441,3 +441,20 @@ dialog p{font-size:16px;line-height:1.65}
 .net-layer-actions #applyNetLayers{background:var(--teal);border-color:#8ce9cd;color:#10382d;font-weight:600}
 .visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 @media(max-width:600px){.net-layers-dialog{padding:19px;max-width:calc(100vw - 20px);max-height:calc(100dvh - 20px)}.net-layers-dialog h2{font-size:25px}.net-layers-tools{align-items:stretch;flex-direction:column;gap:10px}.net-layers-tools label{max-width:none}.net-layers-tools button{align-self:flex-start}.net-layer-actions button{flex:1;min-width:0}.net-layer-table tbody th,.net-layer-table thead th:first-child{min-width:170px;max-width:210px}.net-layer-table th,.net-layer-table td{padding:10px}.net-layer-table-scroll{max-height:36vh}}
+
+/* Animate only a lightweight connection guide; board copper is drawn on change. */
+.canvas-wrap #activityCanvas{pointer-events:none;cursor:inherit}
+.connection-activity-label{position:absolute;left:58px;bottom:18px;max-width:calc(100% - 78px);padding:8px 10px;border:1px solid #426b5d;border-radius:5px;background:#10261feb;color:#b6e5d2;font-size:13px;line-height:1.4;pointer-events:none}
+.connection-activity-label span{display:block;font-size:12px;color:#a2beb3;margin-top:2px}
+.activity-panel{display:flex;flex-direction:column}
+.activity-header{flex-shrink:0}
+.activity-panel .log-scroll{flex:1;min-height:0;height:auto}
+.activity-panel.has-live-activity:not(.collapsed){height:260px}
+.engine-activity{flex-shrink:0;padding:9px 16px;border-bottom:1px solid #29433d;background:#172a25;color:#c1e5d6;font-size:14px;line-height:1.45;overflow-wrap:anywhere}
+.engine-activity>span{display:block;max-height:3em;overflow:auto;scrollbar-width:thin}
+.engine-activity>small{display:block;margin-top:3px;color:#9bbfb1;font:12px/1.4 var(--mono)}
+.engine-activity.awaiting-update{background:#26291f;border-bottom-color:#4a5038}
+.engine-activity.awaiting-update>small{color:#d6c596}
+.activity-panel.collapsed .engine-activity{display:none}
+@media(max-width:900px){.activity-panel.has-live-activity:not(.collapsed){height:250px}.engine-activity{padding:8px 12px}.connection-activity-label{left:52px;max-width:calc(100% - 64px);bottom:12px;font-size:12px}.connection-activity-label span{font-size:11px}}
+@media(prefers-reduced-motion:reduce){.job-state.running .job-state-icon,.spinner{animation:none}}

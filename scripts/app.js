@@ -36,8 +36,16 @@
   let activeAttentionKey = null;
   const visibleLayers = new Map();
   let layerColors = new Map();
+  let layerRenderKey = '';
+  let animationFrame = null;
+  let lastAnimationPaint = 0;
+  let animationWires = [];
+  let animationNet = null;
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const canvas = $('boardCanvas');
   const ctx = canvas.getContext('2d');
+  const activityCanvas = $('activityCanvas');
+  const activityCtx = activityCanvas.getContext('2d');
   const view = { scale: 1, fitScale: 1, x: 0, y: 0, width: 1, height: 1, dragging: false, moved: false };
   let drawQueued = false;
 
@@ -84,7 +92,7 @@
     return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
   }
 
-  function phaseName(phase) { return ({ deep_search: 'Smart search', pad_escape: 'Pad-via escape', finishing: 'Finishing remaining connections', updating_rules: 'Updating net routing layers' })[phase] || phase; }
+  function phaseName(phase) { return ({ reading: 'Reading board data', checking: 'Checking routing rules', advising: 'Preparing placement advice', exporting: 'Preparing exports', rasterizing: 'Preparing copper and clearance grid', loading: 'Loading board', routing: 'Routing connections', fanout: 'Preparing pad escapes', optimizing: 'Refining routes', deep_search: 'Smart search', pad_escape: 'Pad-via escape', finishing: 'Finishing remaining connections', updating_rules: 'Updating net routing layers' })[phase] || phase; }
 
   function isActive() { return Boolean(currentState?.job && activeStates.has(currentState.job.state)); }
 
@@ -178,7 +186,9 @@
 
   function currentBoardKey() {
     const job = currentState?.job;
-    return `${job?.id}|${currentState?.boardRevision ?? job?.revision ?? ''}|${job?.state}|${job?.phase || ''}`;
+    const revision = currentState?.boardRevision ?? job?.revision;
+    // Phase and activity changes do not change the board geometry.
+    return revision === undefined ? `${job?.id}|${job?.state}|${job?.phase || ''}` : `${job?.id}|${revision}`;
   }
 
   function stoppedResultAvailable() {
@@ -450,6 +460,26 @@
     $('passLabel').textContent = pass ? `ATTEMPT ${pass}` : '';
   }
 
+  function updateEngineActivity() {
+    const job = currentState?.job;
+    const active = isActive();
+    $('engineActivity').hidden = !active;
+    document.querySelector('.activity-panel').classList.toggle('has-live-activity', active);
+    if (active) {
+      const message = job?.activity?.message || (job?.state === 'stopping' ? 'Waiting for the current operation to stop safely.' : 'Waiting for the next engine update.');
+      if ($('engineActivityMessage').textContent !== message) $('engineActivityMessage').textContent = message;
+      const age = Number.isFinite(job.lastEngineUpdateAt) ? Math.max(0, Math.floor((Date.now() - job.lastEngineUpdateAt) / 1000)) : null;
+      $('engineActivityAge').textContent = age === null ? 'Waiting for the first engine update' : (age < 2 ? 'Engine updated just now' : `Last engine update ${number(age)} s ago`);
+      $('engineActivity').classList.toggle('awaiting-update', age === null || age >= 10);
+      $('engineActivityAge').title = age !== null && age >= 10 ? 'The current operation has not reported a new update yet. You can still use Stop job.' : '';
+    }
+    if (animationNet !== job?.activity?.netName) {
+      animationNet = job?.activity?.netName;
+      prepareAnimationWires();
+    }
+    syncActivityAnimation();
+  }
+
   function applyState(state) {
     const firstState = currentState === null;
     const previousJob = currentState?.job;
@@ -518,10 +548,13 @@
       boardKey = '';
       board = null;
       visibleLayers.clear();
+      layerRenderKey = '';
+      prepareAnimationWires();
       $('emptyBoard').hidden = true;
       draw();
     }
     updateControls();
+    updateEngineActivity();
     if (hasJob) {
       const nextKey = currentBoardKey();
       if (nextKey !== boardKey) void loadBoard(nextKey, !board);
@@ -550,6 +583,7 @@
       if (!geometry || !Array.isArray(geometry.layers) || key !== currentBoardKey()) return;
       board = geometry;
       boardKey = key;
+      prepareAnimationWires();
       updateLayers();
       $('emptyBoard').hidden = true;
       $('canvasLabel').hidden = false;
@@ -559,6 +593,7 @@
       $('geometrySummary').textContent = parts.join(' · ');
       if (fit) fitBoard(); else draw();
       updateControls();
+      syncActivityAnimation();
     } catch (error) {
       if (!board) $('geometrySummary').textContent = 'Board geometry is not available yet';
     } finally { fetchingBoard = false; $('boardBusy').hidden = true; }
@@ -595,6 +630,13 @@
 
   function updateLayers() {
     const layers = displayLayers(board?.layers || []);
+    const nextLayerKey = JSON.stringify(layers.map(layer => [layer.id, layer.name]));
+    if (nextLayerKey === layerRenderKey) {
+      const checkboxes = $('layersList').querySelectorAll('input');
+      for (const [i, layer] of layers.entries()) if (checkboxes[i]) checkboxes[i].checked = visibleLayers.get(layerKey(layer.id)) !== false;
+      return;
+    }
+    layerRenderKey = nextLayerKey;
     const list = $('layersList');
     list.replaceChildren();
     layerColors = new Map();
@@ -605,7 +647,7 @@
       layerColors.set(key, color);
       const row = document.createElement('label'); row.className = 'layer-row';
       const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = visibleLayers.get(key); checkbox.setAttribute('aria-label', `Show ${layer.displayName || 'layer ' + layer.id}`);
-      checkbox.addEventListener('change', () => { visibleLayers.set(key, checkbox.checked); draw(); });
+      checkbox.addEventListener('change', () => { visibleLayers.set(key, checkbox.checked); draw(); syncActivityAnimation(); });
       const swatch = document.createElement('span'); swatch.className = 'layer-color'; swatch.style.background = color;
       const name = document.createElement('span'); name.className = 'layer-name'; name.textContent = layer.displayName || `Layer ${layer.id}`; name.title = name.textContent;
       const index = document.createElement('small'); index.textContent = String(i + 1).padStart(2, '0');
@@ -621,6 +663,9 @@
     view.width = Math.max(1, rect.width); view.height = Math.max(1, rect.height);
     canvas.width = Math.round(view.width * dpr); canvas.height = Math.round(view.height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const activityDpr = Math.min(dpr, 2);
+    activityCanvas.width = Math.round(view.width * activityDpr); activityCanvas.height = Math.round(view.height * activityDpr);
+    activityCtx.setTransform(activityDpr, 0, 0, activityDpr, 0, 0);
     if (prevWidth > 1 && prevHeight > 1) { view.x += (view.width - prevWidth) / 2; view.y += (view.height - prevHeight) / 2; }
     draw();
   }
@@ -653,7 +698,70 @@
   function draw() {
     if (drawQueued) return;
     drawQueued = true;
-    requestAnimationFrame(() => { drawQueued = false; paintBoard(); });
+    requestAnimationFrame(() => { drawQueued = false; paintBoard(); if (animationFrame !== null) paintActivity(performance.now()); });
+  }
+
+  function prepareAnimationWires() {
+    // A small, evenly spaced sample keeps animation independent of board size.
+    // These are missing connections, never provisional routed copper.
+    const wires = board?.airwires || [];
+    const matching = animationNet ? wires.filter(wire => wire.net === animationNet) : [];
+    const candidates = matching.length ? matching : wires;
+    const count = Math.min(18, candidates.length);
+    animationWires = [];
+    for (let i = 0; i < count; i++) {
+      const wire = candidates[Math.floor(i * candidates.length / count)];
+      const points = (Array.isArray(wire) ? wire : wire.points)?.filter(point => Array.isArray(point) && point.length >= 2 && Number.isFinite(point[0]) && Number.isFinite(point[1]));
+      if (!points || points.length < 2) continue;
+      const lengths = points.slice(1).map((point, j) => Math.hypot(point[0] - points[j][0], point[1] - points[j][1]));
+      const length = lengths.reduce((sum, value) => sum + value, 0);
+      if (length > 0) animationWires.push({ points, lengths, length });
+    }
+  }
+
+  function shouldAnimateConnections() {
+    const job = currentState?.job;
+    return connected && job?.state === 'running' && !!board && animationWires.length > 0 && $('showAirwires').checked && [...visibleLayers.values()].some(Boolean) && !reducedMotion.matches && !document.hidden;
+  }
+
+  function syncActivityAnimation() {
+    const enabled = shouldAnimateConnections();
+    $('connectionActivityLabel').hidden = !enabled;
+    if (!enabled) {
+      if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+      animationFrame = null;
+      activityCtx.clearRect(0, 0, view.width, view.height);
+      return;
+    }
+    if (animationFrame === null) { lastAnimationPaint = 0; animationFrame = requestAnimationFrame(animateConnections); }
+  }
+
+  function animateConnections(now) {
+    if (!shouldAnimateConnections()) { syncActivityAnimation(); return; }
+    if (now - lastAnimationPaint >= 1000 / 24) { lastAnimationPaint = now; paintActivity(now); }
+    animationFrame = requestAnimationFrame(animateConnections);
+  }
+
+  function paintActivity(now) {
+    activityCtx.clearRect(0, 0, view.width, view.height);
+    activityCtx.lineCap = 'round'; activityCtx.lineJoin = 'round';
+    activityCtx.strokeStyle = '#94edcd'; activityCtx.fillStyle = '#cdf7df'; activityCtx.lineWidth = 1.7;
+    for (const [index, wire] of animationWires.entries()) {
+      const cycle = ((now + index * 137) % 2600) / 2600;
+      const fraction = (1 - Math.cos(cycle * Math.PI * 2)) / 2;
+      let remaining = wire.length * fraction;
+      let tip = worldToScreen(...wire.points[0]);
+      activityCtx.beginPath(); activityCtx.moveTo(...tip);
+      for (let i = 0; i < wire.lengths.length && remaining > 0; i++) {
+        const portion = wire.lengths[i] ? Math.min(1, remaining / wire.lengths[i]) : 1;
+        const a = wire.points[i], b = wire.points[i + 1];
+        tip = worldToScreen(a[0] + (b[0] - a[0]) * portion, a[1] + (b[1] - a[1]) * portion);
+        activityCtx.lineTo(...tip); remaining -= wire.lengths[i];
+      }
+      activityCtx.globalAlpha = .78; activityCtx.stroke();
+      if (fraction > .02) { activityCtx.globalAlpha = .9; activityCtx.beginPath(); activityCtx.arc(tip[0], tip[1], 2.2, 0, Math.PI * 2); activityCtx.fill(); }
+    }
+    activityCtx.globalAlpha = 1;
   }
 
   function path(points, closed = false) {
@@ -1063,7 +1171,11 @@
   $('zoomIn').addEventListener('click', () => zoomBy(1.25));
   $('zoomOut').addEventListener('click', () => zoomBy(.8));
   $('showPads').addEventListener('change', draw);
-  $('showAirwires').addEventListener('change', draw);
+  $('showAirwires').addEventListener('change', () => { draw(); syncActivityAnimation(); });
+  reducedMotion.addEventListener('change', syncActivityAnimation);
+  document.addEventListener('visibilitychange', syncActivityAnimation);
+  window.addEventListener('pagehide', () => { if (animationFrame !== null) cancelAnimationFrame(animationFrame); animationFrame = null; });
+  window.addEventListener('pageshow', syncActivityAnimation);
   canvas.addEventListener('wheel', event => { if (!board) return; event.preventDefault(); const rect = canvas.getBoundingClientRect(); zoomBy(Math.exp(-event.deltaY * .0018), event.clientX - rect.left, event.clientY - rect.top); }, { passive: false });
   canvas.addEventListener('pointerdown', event => { if (!board || event.button !== 0) return; view.dragging = true; view.pointerX = event.clientX; view.pointerY = event.clientY; canvas.setPointerCapture(event.pointerId); canvas.classList.add('dragging'); });
   canvas.addEventListener('pointermove', event => {
