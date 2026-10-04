@@ -1,5 +1,5 @@
 /* Checked off-grid fanout for the browser engine. GPL-3.0. */
-function createRamenFanout(geometry) {
+function createRamenFanout(geometry, yieldTask) {
   'use strict';
   const G=geometry,EPS=1e-7,copy=x=>JSON.parse(JSON.stringify(x));
   const dot=(p,v)=>p[0]*v[0]+p[1]*v[1];
@@ -14,9 +14,10 @@ function createRamenFanout(geometry) {
     return {axis,tangent,longSpan,shortSpan,ratio:longSpan/Math.max(shortSpan,EPS)};
   }
   async function fanout(input,options={},emit=()=>{},isCancelled=()=>false) {
-    const board=copy(input),log=[],started=Date.now(),deadline=started+(options.timeoutMinutes||30)*60000;
+    const clock=typeof yieldTask?.now==='function'?yieldTask.now:Date.now;
+    const board=copy(input),log=[],started=clock(),deadline=yieldTask?.managesBudget?Infinity:started+(options.timeoutMinutes||30)*60000;
     if(options.viaInPad){board.viaAtSmd=true;board.viaInPadApplied=true;for(const def of board.viaDefs)def.attachAllowed=true;}
-    const cancelled=()=>isCancelled()||Date.now()>deadline;
+    const cancelled=()=>isCancelled()||clock()>deadline;
     let lastDetail=0;
     let lastSpatial=0,hasSpatial=false,visualCandidateId=0;
     const spatial=(message,activity,makeVisual)=>{const now=Date.now();if(now-lastSpatial<175)return;lastSpatial=now;hasSpatial=true;emit({type:'activity',phase:'fanout',message,activity:{...activity,visual:makeVisual()}});};
@@ -29,7 +30,7 @@ function createRamenFanout(geometry) {
     };
 
     const detail=(message,activity={},force=false)=>{const now=Date.now();if(!force&&now-lastDetail<1200)return;lastDetail=now;emit({type:'progress',phase:'fanout',message,activity});};
-    const pause=()=>new Promise(r=>setTimeout(r,0));
+    const pause=typeof yieldTask==='function'?yieldTask:()=>new Promise(r=>setTimeout(r,0));
     detail('Checking pads and existing copper for fanout',{stage:'fanout-prepare',processed:0,total:board.pads.length},true);await pause();
     const nets=new Map(board.nets.map(n=>[n.id,n])),defs=new Map(board.viaDefs.map(v=>[v.name,v]));
     const traceLayers=net=>net.useLayers||board.layers.map(l=>l.index);
@@ -140,11 +141,11 @@ function createRamenFanout(geometry) {
         if(best?.pads.length===entries.length)break;
       }
       if(best&&best.pads.length<entries.length&&entries.length<=12&&!cancelled()){
-        const rowDeadline=Math.min(deadline,Date.now()+15000);
+        const rowDeadline=Math.min(deadline,clock()+15000);
         // Reconsider each checked escape as a constraint choice; a whole row
         // need not put every via on the same normal-distance line.
         for(let i=0;i<entries.length;i++){
-          if(cancelled()||Date.now()>rowDeadline)break;
+          if(cancelled()||clock()>rowDeadline)break;
           await pause();
           const entry=entries[i];let candidates=0,lastCandidateYield=Date.now();
           detail('Checking escape positions · '+entry.net.name+' · pad '+(i+1)+'/'+entries.length,{stage:'fanout-candidates',netId:entry.net.id,netName:entry.net.name,processed:i+1,total:entries.length});
@@ -173,7 +174,7 @@ function createRamenFanout(geometry) {
           checked.set(k,valid);return valid;
         };
         async function searchChoices(domains,chosen){
-          if(++work>12000||cancelled()||Date.now()>rowDeadline){exhausted=true;return;}
+          if(++work>12000||cancelled()||clock()>rowDeadline){exhausted=true;return;}
           if(complete)return;
           if(!domains.length){complete=chosen;return;}
           if(work%128===0){detail('Fitting dense-row escapes · row '+rowIndex+'/'+rows.length+' · '+work+' combinations checked',{stage:'fanout-combinations',processed:rowIndex,total:rows.length,combinations:work});spatial('Testing combined fanout escapes',{stage:'fanout-combinations',combinations:work},()=>bundleVisual({traces:chosen.flatMap(b=>b.traces),vias:chosen.flatMap(b=>b.vias)},'Actual fanout combination · being checked'));await pause();}
@@ -189,7 +190,7 @@ function createRamenFanout(geometry) {
         if(complete){best={traces:complete.flatMap(b=>b.traces),vias:complete.flatMap(b=>b.vias),pads:complete.flatMap(b=>b.pads)};}
       }
       if(best&&best.pads.length){commit(best);rowCount++;detail('Checked off-grid fanout · '+(board.vias.length-initialVias)+' new escape vias · row '+rowIndex+'/'+rows.length,{stage:'fanout-rows',processed:rowIndex,total:rows.length,addedVias:board.vias.length-initialVias});}
-      await new Promise(r=>setTimeout(r,0));
+      await pause();
     }
     // Compact isolated pads and enclosed thermal pads get a conservative local search.
     let padIndex=0;detail('Checking remaining SMD pad escapes',{stage:'fanout-pads',processed:0,total:shapes.length},true);
@@ -205,7 +206,7 @@ function createRamenFanout(geometry) {
       if(board.viaAtSmd&&defs.get(net.viaName).attachAllowed!==false){const b=bundleFor(entry,[p.x,p.y],[1,0],0);if(b&&legalBundle(b))found=b;}
       if(padLayerAllowed)for(const multiplier of [2,3,4,6,8,10]){if(found)break;for(const direction of directions){const end=[p.x+direction[0]*net.width*multiplier,p.y+direction[1]*net.width*multiplier],b=bundleFor(entry,end,direction,0);if(b&&legalBundle(b)){found=b;break;}}}
       if(found)commit(found);
-      await new Promise(r=>setTimeout(r,0));
+      await pause();
     }
     clearSpatial('fanout-check');detail('Checking completed fanout clearances and connectivity',{stage:'fanout-check',addedVias:board.vias.length-initialVias},true);await pause();
     const validation=G.validate(board);

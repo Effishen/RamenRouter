@@ -1,10 +1,10 @@
 /* RamenRouter checked path refinement. GPL-3.0-or-later. */
-function createRamenOptimizer(geometry) {
+function createRamenOptimizer(geometry, yieldTask) {
   'use strict';
   const G=geometry,EPS=1e-8;
   const clone=x=>JSON.parse(JSON.stringify(x));
   const length=points=>points.slice(1).reduce((sum,p,i)=>sum+G.distance(points[i],p),0);
-  const wait=()=>new Promise(resolve=>setTimeout(resolve,0));
+  const wait=typeof yieldTask==='function'?yieldTask:()=>new Promise(resolve=>setTimeout(resolve,0));
   function compact(points){return points.filter((p,i)=>i===0||G.distance(p,points[i-1])>EPS);}
   function shortcuts(a,b){
     const dx=b[0]-a[0],dy=b[1]-a[1],x=Math.abs(dx),y=Math.abs(dy),sx=Math.sign(dx),sy=Math.sign(dy);

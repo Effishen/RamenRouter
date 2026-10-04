@@ -1,15 +1,15 @@
 /* RamenRouter browser host. GPL-3.0-or-later. No server, runtime or network. */
 'use strict';
 (() => {
-  const active = new Set(['inspecting','starting','running','stopping','clearing','updating_rules']);
+  const active = new Set(['inspecting','starting','running','pausing','paused','stopping','clearing','updating_rules']);
   const subscribers = new Set(), activitySubscribers = new Set();
   let activitySequence=0;
   let job = null, worker = null, workerUrl = null, inputText = null;
   let board = null, preview = null, exports = null, bestChecked = null, clearTransaction = null, ruleTransaction = null, importedNetRules = null, serial = 0, timer = null, watchdog = null;
   const logs = [];
-  const base = {appVersion:'0.2.14',engineVersion:'Ramen JS 0.2.14',fanoutVersion:'Ramen SMD escape'};
+  const base = {appVersion:'0.2.15',engineVersion:'Ramen JS 0.2.15',fanoutVersion:'Ramen SMD escape'};
   function notifyActivity() {
-    const update={jobId:job?.id,state:job?.state,phase:job?.phase,activity:job?.activity,lastEngineUpdateAt:job?.lastEngineUpdateAt,operation:job?.operation,counters:job?.counters,deadlineAt:job?.deadlineAt,remainingSeconds:remaining(),startedAt:job?.startedAt,endedAt:job?.endedAt};
+    const update={jobId:job?.id,state:job?.state,phase:job?.phase,activity:job?.activity,lastEngineUpdateAt:job?.lastEngineUpdateAt,operation:job?.operation,counters:job?.counters,deadlineAt:job?.deadlineAt,remainingSeconds:remaining(),startedAt:job?.startedAt,endedAt:job?.endedAt,pausedAt:job?.pausedAt,pausedDurationMs:job?.pausedDurationMs,budgetGeneration:job?.budgetGeneration};
     for(const fn of activitySubscribers){try{fn(update);}catch(_){}}
   }
   function notify() { notifyActivity(); for (const fn of subscribers) { try { fn(state()); } catch (_) {} } }
@@ -17,7 +17,7 @@
     logs.push(new Date().toLocaleTimeString() + '  ' + String(message));
     if (logs.length > 20000) logs.splice(0,logs.length-20000);
   }
-  function elapsed() { return job ? Math.max(0,((job.endedAt||Date.now())-job.startedAt)/1000) : 0; }
+  function elapsed() { return job ? Math.max(0,((job.endedAt||job.pausedAt||Date.now())-job.startedAt-(job.pausedDurationMs||0))/1000) : 0; }
   function remaining() { return job?.operation==='run'&&Number.isFinite(job.deadlineAt)?Math.max(0,(job.deadlineAt-(job.endedAt??Date.now()))/1000):null; }
   function state() { return {...base,job:job?{...job,elapsedSeconds:elapsed(),remainingSeconds:remaining(),log:logs.slice(-180)}:null}; }
   function kill() {
@@ -36,7 +36,8 @@
       fixedTraceCount:(b?.traces||[]).filter(t=>t.fixed).length,fixedViaCount:(b?.vias||[]).filter(v=>v.fixed).length};
   }
   function netLayerSettings(b) {
-    const layers=(b?.layers||[]).map(layer=>({id:layer.index,name:layer.name})),all=layers.map(layer=>layer.id);
+    const directions=createRamenRouter().layerDirections(b?.layers||[]);
+    const layers=(b?.layers||[]).map(layer=>({id:layer.index,name:layer.name,preferredDirection:directions.get(layer.index)||null})),all=layers.map(layer=>layer.id);
     const padsByNet=new Map();
     for(const pad of b?.pads||[]) {
       if(!padsByNet.has(pad.net))padsByNet.set(pad.net,[]);
@@ -81,6 +82,7 @@
     if(clearTransaction)return restoreBeforeClear(message+' Routing was not cleared; the previous board is unchanged.');
     if(ruleTransaction)return restoreBeforeRules(message+' Routing rules were not changed; the previous board is unchanged.');
     kill();job.stopReason=reason;job.state=reason;job.phase=reason;job.endedAt=Date.now();job.suggestions={};
+    if(job.pausedAt){job.pausedDurationMs=(job.pausedDurationMs||0)+job.endedAt-job.pausedAt;job.pausedAt=null;}
     if(bestChecked) {
       board=bestChecked.board;preview=bestChecked.preview;exports=bestChecked.exports;
       job.stats={...bestChecked.stats};job.routingSummary=routingSummary(board);updateLayerRules();job.advice=bestChecked.advice;job.hasOutput=true;job.revision++;
@@ -91,9 +93,23 @@
     }
     notify();return state();
   }
+  function armBudgetTimer(id) {
+    clearTimeout(timer);clearTimeout(watchdog);timer=null;watchdog=null;
+    const generation=job.budgetGeneration,timeLimit=Math.max(0,job.deadlineAt-Date.now());
+    timer=setTimeout(()=>{
+      if(id!==serial||!job||!active.has(job.state)||job.budgetGeneration!==generation)return;
+      if(job.operation!=='run'){stopWithBest('timed_out','Time budget reached.');return;}
+      if(job.state==='paused'||job.state==='pausing')return;
+      job.resumeState=job.state;job.state='pausing';
+      if(job.activity)job.activity={...job.activity,visual:null,sequence:++activitySequence};
+      worker?.postMessage({type:'pause-budget',generation});
+      log('Time budget reached. Pausing at the next safe point; current work will be kept.');notify();
+    },timeLimit);
+    if(job.operation!=='run')watchdog=setTimeout(()=>{if(id===serial&&job&&active.has(job.state))stopWithBest('timed_out','The worker exceeded its time budget and was terminated.');},timeLimit+30000);
+  }
   function getSettings(value={}) {
-    const s={fanout:true,fanoutOnly:false,optimize:true,deepSearch:true,viaInPad:false,maxPasses:12,timeoutMinutes:30,quality:'balanced',...value,neckdown:false};
-    for(const k of ['fanout','fanoutOnly','optimize','deepSearch','viaInPad']) if(typeof s[k]!=='boolean') throw new Error(k+' must be true or false.');
+    const s={fanout:true,fanoutOnly:false,optimize:true,deepSearch:true,viaInPad:false,preferredDirections:false,maxPasses:12,timeoutMinutes:30,quality:'balanced',...value,neckdown:false};
+    for(const k of ['fanout','fanoutOnly','optimize','deepSearch','viaInPad','preferredDirections']) if(typeof s[k]!=='boolean') throw new Error(k+' must be true or false.');
     for(const [k,min,max] of [['maxPasses',1,100],['timeoutMinutes',1,1440]]) {
       if(!Number.isFinite(s[k])||!Number.isInteger(s[k])||s[k]<min||s[k]>max) throw new Error(k+' must be an integer between '+min+' and '+max+'.');
     }
@@ -101,7 +117,32 @@
     return s;
   }
   function workerMain() {
+    // Yield a real task turn without the repeated minimum delay of nested
+    // timers. One worker-local queue serves routing, fanout and refinement.
+    const yieldQueue=[],yieldChannel=typeof MessageChannel==='function'?new MessageChannel():null;
+    if(yieldChannel)yieldChannel.port1.onmessage=()=>yieldQueue.shift()?.();
+    const yieldTurn=()=>new Promise(resolve=>{
+      if(yieldChannel){yieldQueue.push(resolve);yieldChannel.port2.postMessage(0);}
+      else setTimeout(resolve,0);
+    });
     let cancelled=false,deadline=Infinity,activityScale=1,lastSpatialAt=-Infinity;
+    let managedBudget=false,budgetGeneration=0,pauseRequested=false,pauseResolve=null,pausedAt=null,pausedDurationMs=0;
+    const yieldTask=async()=>{
+      await yieldTurn();
+      while(managedBudget&&!cancelled&&(pauseRequested||Date.now()>=deadline)){
+        const gate=new Promise(resolve=>{pauseResolve=resolve;});
+        pausedAt=Date.now();self.postMessage({type:'budget-paused',generation:budgetGeneration,pausedAt});
+        await gate;
+      }
+    };
+    yieldTask.managesBudget=true;
+    yieldTask.now=()=>{const now=Date.now();return now-pausedDurationMs-(pausedAt?now-pausedAt:0);};
+    function resumeBudget(message){
+      if(!managedBudget||!Number.isInteger(message.generation)||message.generation<=budgetGeneration||!Number.isFinite(message.deadlineAt))return;
+      budgetGeneration=message.generation;deadline=message.deadlineAt;pauseRequested=false;
+      if(pausedAt){pausedDurationMs+=Date.now()-pausedAt;pausedAt=null;}
+      const resolve=pauseResolve;pauseResolve=null;resolve?.();
+    }
     let activityNets=new Map();
     function visualInMm(visual) {
       if(!visual||!['pad','via','grid','search','candidate','trace','check'].includes(visual.kind))return null;
@@ -131,7 +172,7 @@
       const label=activity.visual?.label||(phase==='advising'?'Reviewing placement advice':'Checking board geometry');
       send({type:'activity',phase,message:label+(netName?' · '+netName:''),activity:{...activity,netName}});
     }
-    const dsn=createRamenDSN(), geo=createRamenGeometry(checkedActivity), advisor=createRamenAdvisor(geo), router=createRamenRouter(geo,createRamenOptimizer(geo),createRamenFanout(geo));
+    const dsn=createRamenDSN(), geo=createRamenGeometry(checkedActivity), advisor=createRamenAdvisor(geo), router=createRamenRouter(geo,createRamenOptimizer(geo,yieldTask),createRamenFanout(geo,yieldTask),yieldTask);
     const stage=(phase,message,activity={},writeLog=true)=>send({type:'progress',phase,message,activity,log:writeLog});
     function placementAdvice(b,initialBoard,includeIncomplete) {
       try {return advisor.analyze(b,{initialBoard,includeIncomplete,onActivity:checkedActivity});}
@@ -176,31 +217,39 @@
         outlines:(b.outlines||[]).map(poly=>poly.map(p)),
         airwires:air.map(a=>({net:name(a.net),points:(a.points||[a.from,a.to]).map(p)}))};
     }
-    function checkedResult(result,initialBoard,options,name,initialStats,finalStats,fromInput=false,includeIncomplete=!options.fanoutOnly,prepared=null,writeLog=false) {
+    async function checkedResult(result,initialBoard,options,name,initialStats,finalStats,fromInput=false,includeIncomplete=!options.fanoutOnly,prepared=null,writeLog=false) {
       stage('checking','Checking clearances and trace widths for a saved result.',{},writeLog);
+      await yieldTask();
       const report=prepared?.validation||geo.validate(result);
       stage('advising','Reviewing remaining connections and placement advice.',{},writeLog);
+      await yieldTask();
       const advice=placementAdvice(result,initialBoard,includeIncomplete);
       stage('exporting','Preparing the checked preview and downloadable results.',{},writeLog);
+      await yieldTask();
       return {board:result,preview:geometry(result,prepared?.connection),stats:finalStats,advice,fromInput,
-        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.14',settings:options,routingRules:{shorterNets:result.nets.filter(net=>net.preferShort).map(net=>net.name)},units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
+        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.15',settings:options,routingRules:{shorterNets:result.nets.filter(net=>net.preferShort).map(net=>net.name)},units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
     }
     self.onmessage=async event=>{
       const m=event.data;
-      if(m.type==='stop') {cancelled=true;return;}
+      if(m.type==='stop') {cancelled=true;pauseResolve?.();pauseResolve=null;return;}
+      if(m.type==='pause-budget'){if(managedBudget&&m.generation===budgetGeneration)pauseRequested=true;return;}
+      if(m.type==='extend-budget'){resumeBudget(m);return;}
       if(!['inspect','run','clear','layer-rules'].includes(m.type)) return;
       try {
         cancelled=false;deadline=Number.isFinite(m.deadlineAt)?m.deadlineAt:Date.now()+(m.options?.timeoutMinutes||30)*60000;
+        managedBudget=m.type==='run';budgetGeneration=m.budgetGeneration||0;pauseRequested=false;pausedAt=null;pausedDurationMs=0;
         stage('reading','Reading the DSN board and its routing rules.');
+        await yieldTask();
         const b=dsn.parse(m.text,m.name);
         activityScale=b.units.mmPerUnit;activityNets=new Map(b.nets.map(net=>[net.id,net.name]));
         stage('checking','Loaded '+b.nets.length+' nets, '+b.pads.length+' pads and '+b.layers.length+' copper layers. Checking the input board.');
+        await yieldTask();
         if(m.type==='clear') {
           // No host state changes until parsing, geometry checks, preview and
           // exports have all succeeded in this worker.
           const clearedInput=dsn.clearRoutingDsn(b),cleared=dsn.parse(clearedInput,m.name),finalStats=stats(cleared);
           if(cleared.traces.length||cleared.vias.length)throw new Error('The design still contains routing after clearing.');
-          const result=checkedResult(cleared,cleared,m.options,m.name,finalStats,finalStats,true,false,null,true);
+          const result=await checkedResult(cleared,cleared,m.options,m.name,finalStats,finalStats,true,false,null,true);
           result.exports.dsn=clearedInput;
           send({type:'cleared',clearedInput,warnings:cleared.warnings||[],...result});return;
         }
@@ -208,15 +257,17 @@
           const editedInput=dsn.setNetRoutingRules(b,m.changes),edited=dsn.parse(editedInput,m.name),finalStats=stats(edited);
           // Forbidden imported traces remain visible and checked. The user can
           // widen the rule or deliberately clear routing before trying again.
-          const result=checkedResult(edited,edited,m.options,m.name,finalStats,finalStats,true,false,null,true);
+          const result=await checkedResult(edited,edited,m.options,m.name,finalStats,finalStats,true,false,null,true);
           result.exports.dsn=editedInput;
           send({type:'rules-updated',editedInput,warnings:edited.warnings||[],...result});return;
         }
-        const inputConnection=geo.connectivity(b),inputValidation=geo.validate(b),initial=stats(b,true,inputConnection,inputValidation);
+        const inputConnection=geo.connectivity(b);await yieldTask();
+        const inputValidation=geo.validate(b),initial=stats(b,true,inputConnection,inputValidation);
         // Build the fallback before routing starts. Stop never has to validate,
         // analyze or serialize copper on the UI thread after terminating work.
-        const initialResult=checkedResult(b,b,m.options,m.name,initial,initial,true,!m.options.fanoutOnly,{connection:inputConnection,validation:inputValidation},true);
+        const initialResult=await checkedResult(b,b,m.options,m.name,initial,initial,true,!m.options.fanoutOnly,{connection:inputConnection,validation:inputValidation},true);
         send({type:'loaded',...initialResult,advice:placementAdvice(b,b,false),checkpointAdvice:initialResult.advice,warnings:b.warnings||[]});
+        await yieldTask();
         if(m.type==='inspect') {send({type:'ready'});return;}
         if(initial.inactiveLayerViolations) {
           const error=new Error(initial.inactiveLayerViolations+' imported trace(s) use layers that are not allowed for their nets. Clear routing & start over, or change the net layer rules before routing.');
@@ -231,7 +282,7 @@
           if(message.type==='activity'){send(message);return;}
           if(message.type==='checkpoint') {
             const fromInput=message.stats.traceCount===initial.traceCount&&message.stats.viaCount===initial.viaCount&&message.stats.unrouted===initial.unrouted;
-            send({type:'checkpoint',...checkedResult(message.board,b,m.options,m.name,initial,message.stats,fromInput),phase:message.phase,pass:message.pass,counters:message.counters});return;
+            return checkedResult(message.board,b,m.options,m.name,initial,message.stats,fromInput).then(checked=>send({type:'checkpoint',...checked,phase:message.phase,pass:message.pass,counters:message.counters}));
           }
           const data={type:'progress',phase:message.phase,pass:message.pass,message:message.message,activity:message.activity,log:message.log,counters:message.counters};
           if(message.board && Date.now()-lastPreview>1200) {
@@ -239,12 +290,17 @@
             lastPreview=Date.now();data.board=message.board;data.preview=geometry(message.board,connection);data.stats=message.stats||stats(message.board,false,connection);
           } else if(message.stats) data.stats=message.stats;
           send(data);
-        },()=>cancelled||Date.now()>=deadline);
+        },()=>cancelled);
         stage('checking','Routing search finished. Checking the retained result.');
-        const result=out?.board||out||b,finalConnection=geo.connectivity(result),finalValidation=geo.validate(result),finalStats=stats(result,true,finalConnection,finalValidation);
-        const checked=checkedResult(result,b,m.options,m.name,initial,finalStats,false,!m.options.fanoutOnly,{connection:finalConnection,validation:finalValidation},true);
-        const endState=Date.now()>=deadline?'timed_out':(cancelled||out?.stopped?'stopped':'completed');
+        await yieldTask();
+        const result=out?.board||out||b,finalConnection=geo.connectivity(result);await yieldTask();
+        const finalValidation=geo.validate(result),finalStats=stats(result,true,finalConnection,finalValidation);
+        const checked=await checkedResult(result,b,m.options,m.name,initial,finalStats,false,!m.options.fanoutOnly,{connection:finalConnection,validation:finalValidation},true);
+        // A fully prepared result is terminal; do not park it behind a new
+        // budget gate after its final exports have already been generated.
+        const endState=cancelled||out?.stopped?'stopped':'completed';
         const suggestions=endState==='completed'&&finalStats.unrouted>0&&padViaCandidates.size&&finalConnection.components.some(component=>component.groups.length>1&&padViaCandidates.has(component.net))?{viaInPad:true}:{};
+        if(endState==='completed'&&!m.options.fanoutOnly&&finalStats.unrouted>0&&m.options.preferredDirections&&b.layers.length>1)suggestions.relaxDirections=true;
         send({type:'done',state:endState,suggestions,counters:out?.counters,...checked,
           message:finalStats.unrouted===0?(finalStats.totalViolations?'All connections routed, but '+finalStats.totalViolations+' rule issue(s) remain. Review them in your PCB editor.':'All connections routed. Verify the exported session in your PCB editor.'):finalStats.unrouted+' connections remain; best checked result retained.'});
       } catch(error) {send({type:'error',error:error.message||String(error),code:error.code,stack:error.stack||''});}
@@ -262,6 +318,7 @@
     job={id:String(id),name:job?.name||'board.dsn',state:clearing?'clearing':editingRules?'updating_rules':type==='inspect'?'inspecting':'starting',phase:clearing?'clearing':editingRules?'updating_rules':'loading',startedAt:Date.now(),settings:options,stats:transactional?saved.job.stats:null,initialStats:null,error:null,clearError:null,ruleError:null,hasOutput:false,routingCleared,layerRulesChanged,layerRuleSummary,routingSummary:transactional?routingSummary(board):null,suggestions:{},advice:{items:[]},bestResult:{available:false},revision:0,pass:0};
     job.routingRulesChanged=layerRulesChanged;job.routingRuleSummary=layerRuleSummary;
     job.operation=type;job.counters=null;
+    job.budgetGeneration=0;job.pausedAt=null;job.pausedDurationMs=0;job.resumeState=null;
     job.deadlineAt=job.startedAt+(type==='run'?options.timeoutMinutes*60000:120000);
     job.lastEngineUpdateAt=null;
     job.activity={message:'Starting browser worker…',phase:job.phase,updatedAt:job.startedAt,source:'host',visual:null,sequence:++activitySequence};
@@ -276,6 +333,14 @@
     worker.onmessage=e=>{
       if(id!==serial||!job||!active.has(job.state))return;
       const m=e.data;
+      if(m.type==='budget-paused'){
+        if(type!=='run'||m.generation!==job.budgetGeneration)return;
+        if(job.state!=='pausing'&&job.state!=='paused')job.resumeState=job.state;
+        job.state='paused';job.pausedAt=Number.isFinite(m.pausedAt)?m.pausedAt:Date.now();
+        clearTimeout(timer);timer=null;clearTimeout(watchdog);watchdog=null;
+        if(job.activity)job.activity={...job.activity,visual:null,sequence:++activitySequence};
+        log('Paused. Add more time to continue this exact work, or stop with the best checked result.');notify();return;
+      }
       job.lastEngineUpdateAt=Date.now();
       if(m.counters){job.counters=m.counters;job.pass=m.counters.attempt?.current??job.pass;}
       if(m.type==='activity'||m.message)job.activity={...(m.activity||{}),visual:m.activity?.visual||null,message:String(m.message||m.activity?.visual?.label||'Working on the board'),phase:m.phase||job.phase,updatedAt:job.lastEngineUpdateAt,source:'engine',sequence:++activitySequence};
@@ -334,7 +399,7 @@
         job.advice=m.advice||{items:[]};
         log('Loaded '+job.name+': '+m.stats.netCount+' nets, '+m.stats.unrouted+' incomplete connections.');
         for(const w of m.warnings||[])log('Input note: '+w);
-        if(type==='run'&&job.state!=='stopping') {job.state='running';job.phase='routing';}
+        if(type==='run'&&job.state!=='stopping') {if(job.state==='pausing'||job.state==='paused')job.resumeState='running';else job.state='running';job.phase='routing';}
       }
       if(m.type==='ready') {job.state=job.stopReason||'ready';job.phase=job.state;job.endedAt=Date.now();kill();}
       if(m.type==='done') {
@@ -348,11 +413,9 @@
       notify();
     };
     worker.onerror=e=>{if(id!==serial||!job||!active.has(job.state))return;const message=e.message||'Browser worker failed to start. Use a current Chrome, Edge or Firefox browser.';if(clearing){restoreBeforeClear('Routing could not be cleared: '+message,message);return;}if(editingRules){restoreBeforeRules('Routing rules could not be updated: '+message,message);return;}job.error=message;job.state='error';job.phase='error';job.endedAt=Date.now();log(job.error);kill();notify();};
-    try {worker.postMessage({type,text:inputText,name:job.name,options,changes,deadlineAt:job.deadlineAt});}
+    try {worker.postMessage({type,text:inputText,name:job.name,options,changes,deadlineAt:job.deadlineAt,budgetGeneration:job.budgetGeneration});}
     catch(error) {if(clearing)restoreBeforeClear('Routing could not be cleared: '+error.message,error.message);if(editingRules)restoreBeforeRules('Routing rules could not be updated: '+error.message,error.message);throw error;}
-    const timeLimit=Math.max(0,job.deadlineAt-Date.now());
-    timer=setTimeout(()=>{if(id===serial&&job&&active.has(job.state))stopWithBest('timed_out','Time budget reached.');},timeLimit);
-    watchdog=setTimeout(()=>{if(id===serial&&job&&active.has(job.state))stopWithBest('timed_out','The worker exceeded its time budget and was terminated.');},timeLimit+30000);
+    armBudgetTimer(id);
     notify();return state();
   }
   function requireIdle(){if(job&&active.has(job.state))throw new Error('Stop the current operation before starting another.');}
@@ -407,7 +470,20 @@
       requireIdle();if(!inputText)throw new Error('Load a board first.');const settings=getSettings(data||{});logs.length=0;
       log(job?.routingCleared?'Starting browser-native routing from the cleared board. Nominal trace widths are preserved.':'Starting browser-native routing. Original input and nominal trace widths are preserved.');
       if(settings.viaInPad)log('Explicit rule override: vias may attach to SMD pads.');
+      if(settings.preferredDirections)log('Alternating layer directions enabled: vertical on the first copper layer, then alternating. Shorter-route nets keep their length priority.');
       return launch('run',settings);
+    }
+    if(endpoint==='/api/extend'){
+      if(String(options.method||'GET').toUpperCase()!=='POST')throw new Error('Adding time requires a POST action.');
+      if(!job||job.operation!=='run'||!worker||!['pausing','paused'].includes(job.state))throw new Error('This job is not waiting for more time.');
+      if(typeof data?.jobId!=='string'||data.jobId!==job.id)throw new Error('The selected job changed. Review the current job before adding time.');
+      const minutes=data.timeoutMinutes;
+      if(!Number.isInteger(minutes)||minutes<1||minutes>1440)throw new Error('Additional time must be a whole number from 1 to 1440 minutes.');
+      const now=Date.now();
+      if(job.pausedAt){job.pausedDurationMs+=now-job.pausedAt;job.pausedAt=null;}
+      job.budgetGeneration++;job.deadlineAt=now+minutes*60000;job.state=job.resumeState==='starting'?'starting':'running';job.resumeState=null;
+      worker.postMessage({type:'extend-budget',generation:job.budgetGeneration,deadlineAt:job.deadlineAt});
+      armBudgetTimer(serial);log('Added '+minutes+' minute(s). Continuing the same in-progress work.');notify();return state();
     }
     if(endpoint==='/api/clear-routing') {
       if(String(options.method||'GET').toUpperCase()!=='POST')throw new Error('Clear routing requires a confirmed POST action.');

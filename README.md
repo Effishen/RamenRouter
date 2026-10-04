@@ -47,6 +47,12 @@ the job can finish earlier. Time left is the remaining job budget, not a
 prediction of when routing will finish. The counts and timer freeze when you
 stop, so you can review how far the job got.
 
+When the time limit is reached, the job pauses at its next safe point. Choose
+extra minutes and **Extend time** to continue the same work, including board
+preparation before any traces have been drawn. Your progress and attempt
+counts are kept. Leave this page open while paused. You can also stop and keep
+the best checked result available.
+
 During routing, the activity line and job log show what the engine is working
 on, including grid preparation, fanout, path searches and result checks. The
 last-update time tells you when the engine most recently reported progress.
@@ -59,8 +65,10 @@ geometry checks as well as route searches. Highlights stay at the real
 locations being examined; paths follow the actual reported segments.
 The preview can show route paths for up to a quarter of your board's nets at
 once, with a maximum of 25 work samples. It fills as the engine reports work,
-so fewer may be visible. Turn off **Live work** to hide these highlights.
-Reduced-motion settings keep them still.
+so fewer may be visible. The display adjusts its refresh rate when drawing
+gets busy; routing continues without waiting for an animation to finish.
+Turn off **Live work** to hide these highlights. Reduced-motion settings keep
+them still.
 
 Already have a partly or fully routed DSN? Choose **Clear routing & start over**
 below the loaded filename. After you confirm, RamenRouter removes all traces
@@ -69,8 +77,20 @@ connections and board rules stay in place, and your original file is unchanged.
 Review the cleared board, then click **Start routing** when you are ready.
 Download any result you want to keep before clearing it.
 
-Want a particular net to stay on one side of the board? Open **Routing rules**
-under Routing setup, find the net, and select the layers its traces may use.
+Open **Routing rules** to choose how the next run should work. **Routing
+options** groups Smart search, pad escapes, refinement, time limits and other
+switches in one place. **Apply** saves your choices; **Cancel** discards edits.
+
+**Prefer alternating layer directions** encourages vertical traces on the
+top layer, horizontal traces on the next layer, and alternating directions
+through the stack. The dialog shows each layer's preference. It is off by
+default and can deviate where needed; single-layer boards are unaffected.
+Nets marked **Prefer shorter routes** keep their length priority. If routing
+finishes with connections missing, RamenRouter offers to turn the direction
+preference off and retry. It changes the setting only when you choose to.
+
+Want a particular net to stay on one side of the board? In **Routing rules**,
+open **Net rules**, find the net, and select the layers its traces may use.
 You can choose one layer or several. **Reset** restores that net's choices
 from your imported file. These choices affect routing; the preview's
 **Visible layers** controls only change what you see.
@@ -94,8 +114,9 @@ Search with **\*** wildcards: **USB\*** finds names starting with USB,
 **\*CLK** finds names ending with CLK, and **\*CLK\*** finds names containing
 CLK. Searches ignore capitalisation. Plain text still finds any part of a name.
 
-Save your current result before applying routing rules: applying replaces it
-with the input board, keeping its imported traces and vias. If existing traces
+Changing routing options alone keeps your current result and affects the next
+run. Save your result before applying per-net changes: these return the board
+to its input routing, keeping its imported traces and vias. If existing traces
 use an excluded layer, revise the selection or choose **Clear routing & start
 over**. Pads and through vias keep their physical layer spans. Some layer
 choices can leave pads hard to reach, so review any warnings, then click

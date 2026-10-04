@@ -2,7 +2,7 @@
 
 (() => {
   const $ = id => document.getElementById(id);
-  const activeStates = new Set(['inspecting', 'clearing', 'updating_rules', 'starting', 'running', 'routing', 'fanout', 'optimizing', 'stopping', 'loading']);
+  const activeStates = new Set(['inspecting', 'clearing', 'updating_rules', 'starting', 'running', 'routing', 'fanout', 'optimizing', 'stopping', 'loading', 'pausing', 'paused']);
   const terminalStates = new Set(['completed', 'stopped', 'timed_out', 'error', 'failed']);
   const palette = ['#df9676', '#73c7c2', '#c1ab69', '#a394d3', '#83b76e', '#be86a6', '#73a0d0', '#a5b4bf'];
   const nativeEngine = globalThis.RamenNative;
@@ -26,6 +26,8 @@
   let dismissedStopJobId = null;
   let viewedStopJobId = null;
   let announcedStopJobId = null;
+  let budgetPromptJobId = null;
+  let announcedBudgetKey = null;
   let announcedExportJobId = null;
   let downloadedSesJobId = null;
   let remainingRenderKey = '';
@@ -33,6 +35,9 @@
   let netLayersData = null;
   let netLayerDrafts = new Map();
   let netShortDrafts = new Map();
+  let routingOptionsBeforeDialog = null;
+  let pendingRoutingOptions = null;
+  let dismissedDirectionJobId = null;
   const acknowledgedAttention = new Set();
   let activeAttentionKey = null;
   const visibleLayers = new Map();
@@ -56,8 +61,8 @@
   const view = { scale: 1, fitScale: 1, x: 0, y: 0, width: 1, height: 1, dragging: false, moved: false };
   let drawQueued = false;
 
-  const icons = { ready: '○', completed: '✓', stopped: 'Ⅱ', timed_out: '◷', error: '!', failed: '!' };
-  const labels = { ready: 'Board ready', inspecting: 'Reading your board', clearing: 'Clearing routing', updating_rules: 'Updating routing rules', starting: 'Starting engine', running: 'Routing in progress', routing: 'Routing in progress', fanout: 'Fanout in progress', optimizing: 'Refining routes', stopping: 'Stopping safely', completed: 'Job complete', stopped: 'Job stopped', timed_out: 'Time limit reached', error: 'Job needs attention', failed: 'Job needs attention', idle: 'Ready when you are' };
+  const icons = { ready: '○', completed: '✓', stopped: 'Ⅱ', paused: 'Ⅱ', pausing: '◷', timed_out: '◷', error: '!', failed: '!' };
+  const labels = { ready: 'Board ready', inspecting: 'Reading your board', clearing: 'Clearing routing', updating_rules: 'Updating routing rules', starting: 'Starting engine', running: 'Routing in progress', routing: 'Routing in progress', fanout: 'Fanout in progress', optimizing: 'Refining routes', stopping: 'Stopping safely', pausing: 'Time limit reached', paused: 'Paused · time limit reached', completed: 'Job complete', stopped: 'Job stopped', timed_out: 'Time limit reached', error: 'Job needs attention', failed: 'Job needs attention', idle: 'Ready when you are' };
 
   function toast(message, error = false) {
     clearTimeout(toastTimer);
@@ -103,6 +108,7 @@
   function phaseName(phase) { return ({ reading: 'Reading board data', checking: 'Checking routing rules', advising: 'Preparing placement advice', exporting: 'Preparing exports', rasterizing: 'Preparing copper and clearance grid', loading: 'Loading board', routing: 'Routing connections', fanout: 'Preparing pad escapes', optimizing: 'Refining routes', deep_search: 'Smart search', pad_escape: 'Pad-via escape', finishing: 'Finishing remaining connections', updating_rules: 'Updating routing rules' })[phase] || phase; }
 
   function isActive() { return Boolean(currentState?.job && activeStates.has(currentState.job.state)); }
+  function awaitingMoreTime(job = currentState?.job) { return job?.operation === 'run' && ['pausing', 'paused'].includes(job.state); }
 
   function outputAvailable(type) {
     const output = currentState?.job?.hasOutput;
@@ -131,9 +137,13 @@
     if ($('clearRoutingDialog').open && (job?.id !== clearRoutingJobId || active)) $('clearRoutingDialog').close();
     $('netLayersSetting').hidden = !job || job.state === 'idle';
     $('netLayersButton').disabled = !available || active;
-    if ($('netLayersDialog').open && (job?.id !== netLayersData?.jobId || active)) $('netLayersDialog').close();
+    $('cancelNetLayers').disabled = busy;
+    $('closeNetLayers').disabled = busy;
+    if ($('netLayersDialog').open && (job?.id !== netLayersData?.jobId || active)) { discardRoutingRuleDraft(); $('netLayersDialog').close(); }
     const layerSummary = job?.routingRuleSummary || job?.layerRuleSummary;
-    $('netLayersSummary').textContent = layerSummary ? `${number(layerSummary.restrictedNets)} of ${number(layerSummary.totalNets)} nets limited to selected layers · ${number(layerSummary.shortRouteNets || 0)} prefer shorter routes${job.routingRulesChanged || job.layerRulesChanged ? ' · edited' : ''}.` : 'Choose layers and prioritize shorter routes for each net.';
+    const savedOptions = routingOptionsBeforeDialog || readRoutingOptions();
+    const optionSummary = `${number(savedOptions.maxPasses)} attempts · ${number(savedOptions.timeoutMinutes)} min${savedOptions.preferredDirections ? ' · alternating directions' : ''}`;
+    $('netLayersSummary').textContent = optionSummary + (layerSummary ? ` · ${number(layerSummary.restrictedNets)} layer-limited nets · ${number(layerSummary.shortRouteNets || 0)} prefer shorter routes` : '');
     const layerConflicts = layerSummary?.conflictingTraces || 0;
     $('netLayerConflict').hidden = !layerConflicts || active;
     $('netLayerConflict').textContent = layerConflicts ? `${number(layerConflicts)} existing ${layerConflicts === 1 ? 'trace is' : 'traces are'} on excluded layers. Use “Clear routing & start over” to remove existing routes, or revise the net layer rules.` : '';
@@ -142,6 +152,7 @@
     if (available && !active) {
       const fanoutOnly = $('fanout').checked && $('fanoutOnly').checked;
       $('optimize').disabled = fanoutOnly; $('deepSearch').disabled = fanoutOnly;
+      $('preferredDirections').disabled = fanoutOnly || (netLayersData?.layers.length ?? board?.layers?.length ?? 2) < 2;
     }
     $('fanoutOnlyRow').hidden = !$('fanout').checked;
     const fanoutOnlyMode = $('fanout').checked && $('fanoutOnly').checked;
@@ -161,10 +172,13 @@
     if (job?.state === 'updating_rules') hint = 'Applying net layers and checking your input board…';
     if (busy) hint = 'Preparing your board…';
     if (stopping) hint = forcedStop ? 'Force stop requested.' : 'Finishing the current operation…';
+    if (awaitingMoreTime(job)) hint = job.state === 'paused' ? 'Extend the time to continue this run, or stop.' : 'Reaching a safe pause point. You can extend now.';
     if (!connected) hint = 'Waiting for the browser engine.';
     $('runHint').textContent = hint;
     updateStoppedFeedback();
+    updateBudgetFeedback();
     updateViaSuggestion();
+    updateDirectionSuggestion();
     updateRemainingRoutes();
     updatePlacementAdvice();
     updateExportAttention();
@@ -179,15 +193,17 @@
   function updateAttention() {
     const job = currentState?.job;
     let key = null, target = null;
-    if (connected && !busy && !isActive()) {
-      if (!job || job.state === 'idle') { key = 'import'; target = $('dropzone'); }
+    if (connected && !busy && (!isActive() || awaitingMoreTime(job))) {
+      if (awaitingMoreTime(job)) { key = `budget:${job.id}:${job.budgetGeneration || 0}`; target = $('timeBudgetPrompt'); }
+      else if (!job || job.state === 'idle') { key = 'import'; target = $('dropzone'); }
       else if (job.state === 'stopped' && !$('stopResultPrompt').hidden) { key = `stopped:${job.id}`; target = $('stopResultPrompt'); }
+      else if (!$('directionSuggestion').hidden && !acknowledgedAttention.has(`directions:${job.id}`)) { key = `directions:${job.id}`; target = $('directionSuggestion'); }
       else if (!$('placementAdvice').hidden && !acknowledgedAttention.has(`advice:${job.id}`)) { key = `advice:${job.id}`; target = $('showPlacementAdvice'); }
       else if (job.state === 'ready') { key = `start:${job.id}`; target = $('runButton'); }
       else if (!$('remainingRoutes').hidden && $('placementAdvice').hidden && job.state !== 'stopped') { key = `remaining:${job.id}`; target = $('remainingRoutes'); }
     }
     if (key && acknowledgedAttention.has(key)) { key = null; target = null; }
-    for (const node of [$('dropzone'), $('runButton'), $('stopResultPrompt'), $('showPlacementAdvice'), $('remainingRoutes')]) node.classList.toggle('attention-cue', node === target);
+    for (const node of [$('dropzone'), $('runButton'), $('stopResultPrompt'), $('timeBudgetPrompt'), $('directionSuggestion'), $('showPlacementAdvice'), $('remainingRoutes')]) node.classList.toggle('attention-cue', node === target);
     $('placementAdvice').classList.toggle('attention-panel', target === $('showPlacementAdvice'));
     activeAttentionKey = key;
   }
@@ -197,6 +213,52 @@
     const revision = currentState?.boardRevision ?? job?.revision;
     // Phase and activity changes do not change the board geometry.
     return revision === undefined ? `${job?.id}|${job?.state}|${job?.phase || ''}` : `${job?.id}|${revision}`;
+  }
+
+  function updateBudgetFeedback() {
+    const job = currentState?.job, show = awaitingMoreTime(job);
+    $('timeBudgetPrompt').hidden = !show;
+    for (const id of ['extraTimeMinutes', 'extendTimeButton', 'finishTimedRun']) $(id).disabled = !show || !connected || busy;
+    if (!show) return;
+    if (budgetPromptJobId !== job.id) {
+      budgetPromptJobId = job.id;
+      const minutes = job.settings?.timeoutMinutes;
+      $('extraTimeMinutes').value = Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440 ? minutes : 30;
+    }
+    $('timeBudgetTitle').textContent = job.state === 'paused' ? 'Continue this run?' : 'Time limit reached';
+    $('timeBudgetDetail').textContent = job.state === 'paused'
+      ? 'Your work is paused in place, including any board preparation. Extend the time to continue exactly where it paused, or stop.'
+      : 'Pausing at the next safe point. Extend now to keep this run going, including any board preparation already in progress.';
+    $('finishTimedRun').textContent = job.bestResult?.available ? 'Keep best & stop' : 'Stop job';
+    $('timeBudgetStopDetail').textContent = job.bestResult?.available ? 'Stopping keeps the best checked result for review and export.' : 'No checked result is available yet. Stopping ends this run.';
+    const key = `budget:${job.id}:${job.budgetGeneration || 0}`;
+    if (announcedBudgetKey !== key) {
+      announcedBudgetKey = key;
+      requestAnimationFrame(() => { if (!$('timeBudgetPrompt').hidden) $('timeBudgetPrompt').scrollIntoView({ block: 'nearest' }); });
+    }
+  }
+
+  async function extendRoutingTime() {
+    const job = currentState?.job;
+    if (busy || !connected || !awaitingMoreTime(job) || !$('extraTimeMinutes').reportValidity()) return;
+    const timeoutMinutes = Number($('extraTimeMinutes').value);
+    if (!Number.isInteger(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 1440) return;
+    acknowledgeAttention();
+    busy = true; updateControls();
+    try {
+      await post('/api/extend', { jobId: job.id, timeoutMinutes });
+      toast(`Added ${number(timeoutMinutes)} ${timeoutMinutes === 1 ? 'minute' : 'minutes'}. Continuing the same run.`);
+    } catch (error) { toast(error.message, true); }
+    finally { busy = false; updateControls(); }
+  }
+
+  async function finishTimedRun() {
+    if (busy || !connected || !awaitingMoreTime()) return;
+    acknowledgeAttention();
+    busy = true; updateControls();
+    try { await post('/api/stop'); }
+    catch (error) { toast(error.message, true); }
+    finally { busy = false; updateControls(); }
   }
 
   function stoppedResultAvailable() {
@@ -313,6 +375,23 @@
     if (announcedSuggestionJobId !== job.id) {
       announcedSuggestionJobId = job.id;
       requestAnimationFrame(() => { if (!$('viaSuggestion').hidden) $('viaSuggestion').scrollIntoView({ block: 'nearest' }); });
+    }
+  }
+
+  function canSuggestRelaxingDirections() {
+    const job = currentState?.job;
+    return Boolean(job?.state === 'completed' && job.hasOutput && job.stats?.unrouted > 0 &&
+      job.settings?.preferredDirections && !job.settings?.fanoutOnly && job.suggestions?.relaxDirections && job.id !== dismissedDirectionJobId);
+  }
+
+  function updateDirectionSuggestion() {
+    const show = canSuggestRelaxingDirections();
+    $('directionSuggestion').hidden = !show;
+    $('relaxDirectionsRetry').disabled = !show || busy || !connected || isActive();
+    $('dismissDirectionSuggestion').disabled = busy;
+    if (show) {
+      const count = currentState.job.stats.unrouted;
+      $('directionSuggestionDetail').textContent = `${number(count)} ${count === 1 ? 'connection remains' : 'connections remain'} after routing with alternating layer directions preferred. You can turn this preference off and try another run.`;
     }
   }
 
@@ -510,6 +589,7 @@
     if (!show) { stopProgressClock(); return; }
     const ended = Number.isFinite(job.endedAt) || terminalStates.has(job.state);
     const running = activeStates.has(job.state) && !ended;
+    const waiting = awaitingMoreTime(job);
     for (const name of ['attempt', 'refinement', 'repair']) {
       const display = counterDisplay(job.counters?.[name], job, name === 'attempt');
       progressText(name + 'Value', display.value);
@@ -521,9 +601,9 @@
     else if (Number.isFinite(job.remainingSeconds)) left = Math.max(0, job.remainingSeconds);
     else if (Number.isFinite(job.deadlineAt) && Number.isFinite(job.endedAt)) left = Math.max(0, (job.deadlineAt - job.endedAt) / 1000);
     progressText('timeLeftValue', left === null ? '—' : seconds(Math.ceil(left)));
-    progressText('timeLeftDetail', ended ? 'Unused time when the job ended' : (left === 0 ? 'Time limit reached · stopping' : 'Time limit · not a finish estimate'));
+    progressText('timeLeftDetail', ended ? 'Unused time when the job ended' : (waiting ? (job.state === 'paused' ? 'Paused · choose more time or stop' : 'Reaching a safe pause point') : (left === 0 ? 'Time limit reached · pausing' : 'Time limit · not a finish estimate')));
     $('timeLeftProgress').classList.toggle('time-low', running && left !== null && left <= 60);
-    if (Number.isFinite(job.startedAt) && (!ended || Number.isFinite(job.endedAt))) progressText('elapsedValue', seconds(Math.max(0, ((ended ? job.endedAt : Date.now()) - job.startedAt) / 1000)));
+    if (Number.isFinite(job.startedAt) && (!ended || Number.isFinite(job.endedAt))) progressText('elapsedValue', seconds(Math.max(0, ((ended ? job.endedAt : (Number.isFinite(job.pausedAt) ? job.pausedAt : Date.now())) - job.startedAt - (job.pausedDurationMs || 0)) / 1000)));
     const work = job.counters?.work;
     let detail = '';
     if (work && running) {
@@ -533,7 +613,7 @@
     }
     progressText('roundWorkDetail', detail);
     $('roundWorkDetail').hidden = !detail;
-    if (running && !document.hidden) {
+    if (running && job.state !== 'paused' && !document.hidden) {
       if (progressClock === null) progressClock = setTimeout(() => { progressClock = null; updateRunProgress(); }, 1000);
     } else stopProgressClock();
   }
@@ -545,12 +625,13 @@
     $('engineActivity').hidden = !active;
     document.querySelector('.activity-panel').classList.toggle('has-live-activity', active);
     if (active) {
-      const message = job?.activity?.message || (job?.state === 'stopping' ? 'Waiting for the current operation to stop safely.' : 'Waiting for the next engine update.');
+      const waiting = awaitingMoreTime(job);
+      const message = waiting ? (job.state === 'paused' ? 'Paused at the time limit. Extend time to continue this same operation, or stop.' : 'Time limit reached. Pausing at the next safe point; you can extend the time now.') : (job?.activity?.message || (job?.state === 'stopping' ? 'Waiting for the current operation to stop safely.' : 'Waiting for the next engine update.'));
       if ($('engineActivityMessage').textContent !== message) $('engineActivityMessage').textContent = message;
       const age = Number.isFinite(job.lastEngineUpdateAt) ? Math.max(0, Math.floor((Date.now() - job.lastEngineUpdateAt) / 1000)) : null;
-      $('engineActivityAge').textContent = age === null ? 'Waiting for the first engine update' : (age < 2 ? 'Engine updated just now' : `Last engine update ${number(age)} s ago`);
-      $('engineActivity').classList.toggle('awaiting-update', age === null || age >= 10);
-      $('engineActivityAge').title = age !== null && age >= 10 ? 'The current operation has not reported a new update yet. You can still use Stop job.' : '';
+      $('engineActivityAge').textContent = waiting ? (job.state === 'paused' ? 'Work retained · waiting for your choice' : 'Finishing the current step before pausing') : (age === null ? 'Waiting for the first engine update' : (age < 2 ? 'Engine updated just now' : `Last engine update ${number(age)} s ago`));
+      $('engineActivity').classList.toggle('awaiting-update', !waiting && (age === null || age >= 10));
+      $('engineActivityAge').title = !waiting && age !== null && age >= 10 ? 'The current operation has not reported a new update yet. You can still use Stop job.' : '';
     }
     receiveSpatialActivity(job);
     syncActivityVisual();
@@ -564,6 +645,14 @@
     if (state.appVersion) $('appVersion').textContent = state.appVersion;
     if (state.engineVersion) $('engineVersion').textContent = state.engineVersion;
     const job = state.job;
+    if (pendingRoutingOptions?.transactionJobId) {
+      const pending = pendingRoutingOptions;
+      if (job?.id === pending.transactionJobId && job.state === 'ready' && !job.ruleError) {
+        writeRoutingOptions(pending.options); saveSettings(pending.options); pendingRoutingOptions = null;
+      } else if (job?.ruleError || job?.id === pending.sourceJobId || (job?.id !== pending.transactionJobId) || (!activeStates.has(job?.state) && job?.state !== 'ready')) {
+        writeRoutingOptions(pending.previous); pendingRoutingOptions = null;
+      }
+    }
     if (previousJob?.state === 'clearing' && job?.state !== 'clearing') {
       if (job?.id === previousJob.id && job.state === 'ready' && job.routingCleared) {
         $('showAirwires').checked = true;
@@ -582,7 +671,7 @@
     const hasJob = Boolean(job && job.state !== 'idle');
     const active = isActive();
     if (job?.settings && !['ready', 'inspecting', 'clearing', 'updating_rules'].includes(job.state) && !['clearing', 'updating_rules'].includes(previousJob?.state) && (firstState || job.id !== lastJobId)) {
-      for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad']) if (typeof job.settings[key] === 'boolean') $(key).checked = job.settings[key];
+      for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad', 'preferredDirections']) if (typeof job.settings[key] === 'boolean') $(key).checked = job.settings[key];
       for (const key of ['maxPasses', 'timeoutMinutes']) if (typeof job.settings[key] === 'number') $(key).value = job.settings[key];
     }
     if (job?.state === 'stopping') stoppingSince ??= Date.now();
@@ -599,8 +688,8 @@
     const completedWithRuleIssues = job?.state === 'completed' && (job.stats?.totalViolations ?? job.stats?.clearanceViolations ?? 0) > 0;
     $('stateTitle').textContent = job?.state === 'completed' && job.stats?.unrouted > 0 ? 'Connections remain' : (completedWithRuleIssues ? 'Review rule issues' : (labels[job?.state] || (job?.state ? job.state : 'Ready when you are')));
     $('phaseLabel').textContent = phaseName(job?.phase) || (hasJob ? 'Choose settings and start routing' : 'No active job');
-    $('jobStateIcon').textContent = active ? '⤳' : (completedWithRuleIssues ? '!' : (icons[job?.state] || '○'));
-    $('jobState').className = `job-state ${active ? 'running' : (job?.state === 'error' || completedWithRuleIssues ? 'failed' : job?.state || '')}`;
+    $('jobStateIcon').textContent = awaitingMoreTime(job) ? icons[job.state] : (active ? '⤳' : (completedWithRuleIssues ? '!' : (icons[job?.state] || '○')));
+    $('jobState').className = `job-state ${active && !awaitingMoreTime(job) ? 'running' : (job?.state === 'error' || completedWithRuleIssues ? 'failed' : job?.state || '')}`;
     $('elapsedValue').textContent = seconds(job?.elapsedSeconds);
     $('jobError').hidden = !job?.error;
     $('jobError').textContent = job?.error ? String(job.error) : '';
@@ -785,6 +874,24 @@
     return { layer: item.layer, points, lengths, length: lengths.reduce((sum, value) => sum + value, 0) };
   }
 
+  let activityPaintPending = false;
+  let activityHasPixels = false;
+  let activityPaintCost = 0;
+  let activityFrameDelay = 30;
+  // Geometry is immutable after a work report. Reuse its screen coordinates
+  // and complete canvas path until the viewport changes; weak keys let old
+  // samples disappear with the bounded history instead of retaining a cache.
+  const activityGeometryCache = new WeakMap();
+
+  function activityScreenGeometry(points) {
+    let cached = activityGeometryCache.get(points);
+    if (!cached || cached.scale !== view.scale || cached.x !== view.x || cached.y !== view.y) {
+      cached = { scale: view.scale, x: view.x, y: view.y, points: points.map(point => worldToScreen(point[0], point[1])), path: null };
+      activityGeometryCache.set(points, cached);
+    }
+    return cached;
+  }
+
   function routePreviewLimit(job = activityJob()) {
     const netCount = job?.stats?.netCount ?? job?.initialStats?.netCount ?? 1;
     return Math.max(1, Math.min(25, Math.ceil((Number.isFinite(netCount) ? netCount : 1) * .25)));
@@ -801,12 +908,14 @@
 
   function pruneRecentWork() {
     const now = Date.now();
-    for (const [key, item] of recentWorkActivity) if (item.expiresAt <= now || (item.family !== workActivityFamily() && item.family !== 'routing')) recentWorkActivity.delete(key);
+    const family = workActivityFamily();
+    for (const [key, item] of recentWorkActivity) if (item.expiresAt <= now || (item.family !== family && item.family !== 'routing')) recentWorkActivity.delete(key);
     // Search branches stay limited to a quarter of the nets. Other work uses
     // object geometry, so many pads on one net remain separate actual samples.
     let routeCount = [...recentWorkActivity.values()].filter(item => item.routeSample).length;
+    const routeLimit = routePreviewLimit();
     for (const [key, item] of recentWorkActivity) {
-      if (routeCount <= routePreviewLimit()) break;
+      if (routeCount <= routeLimit) break;
       if (item.routeSample) { recentWorkActivity.delete(key); routeCount--; }
     }
     // Reserve space for 512 current path vertices, 64 points, four bounds
@@ -819,15 +928,15 @@
     }
   }
 
-  function recentWorkPreviews() {
-    if (!activityEnabled() || !board || !workActivityFamily()) return [];
+  function recentWorkPreviews(current = spatialActivityVisible() ? spatialActivity : null) {
+    const family = workActivityFamily();
+    if (!activityEnabled() || !board || !family) return [];
     pruneRecentWork();
-    const current = spatialActivityVisible() ? spatialActivity : null;
     const available = 25 - (current ? 1 : 0);
     let routeSlots = routePreviewLimit() - (current?.routeSample ? 1 : 0);
     const previews = [];
     for (const item of [...recentWorkActivity.values()].reverse()) {
-      if (item.family !== workActivityFamily() || item.sampleKey === current?.sampleKey || !workSampleVisible(item)) continue;
+      if (item.family !== family || item.sampleKey === current?.sampleKey || !workSampleVisible(item)) continue;
       if (item.routeSample && routeSlots-- <= 0) continue;
       previews.push(item);
       if (previews.length === available) break;
@@ -839,7 +948,7 @@
     const jobKey = `${job?.id || ''}|${job?.startedAt || ''}|${job?.operation || ''}`;
     const family = workActivityFamily(job);
     const newJob = jobKey !== recentWorkJobKey;
-    const active = activeStates.has(job?.state) && job?.state !== 'stopping';
+    const active = activeStates.has(job?.state) && !['stopping', 'pausing', 'paused'].includes(job?.state);
     const completionFamily = job?.activity?.complete ? (workActivityFamily({ phase: job.activity.phase }) || recentWorkFamily || family) : '';
     // Phase-only updates can carry the previous activity sequence. Suppress
     // incompatible samples before that sequence's early-return check.
@@ -909,7 +1018,7 @@
 
   function activityEnabled() {
     const job = activityJob();
-    return connected && activeStates.has(job?.state) && job?.state !== 'stopping' && $('showLiveWork').checked && !document.hidden;
+    return connected && activeStates.has(job?.state) && !['stopping', 'pausing', 'paused'].includes(job?.state) && $('showLiveWork').checked && !document.hidden;
   }
 
   function spatialActivityVisible() {
@@ -920,66 +1029,99 @@
     if (activityFrame !== null) cancelAnimationFrame(activityFrame);
     if (activityExpiryTimer !== null) clearTimeout(activityExpiryTimer);
     activityFrame = activityExpiryTimer = null;
+    activityPaintPending = false;
   }
 
-  function updateSpatialCaption() {
+  function activityFrameState() {
     const enabled = activityEnabled();
+    const current = enabled && spatialActivityVisible() ? spatialActivity : null;
+    return { enabled, current, recent: enabled ? recentWorkPreviews(current) : [] };
+  }
+
+  function updateSpatialCaption(frame = activityFrameState()) {
+    const { enabled, current, recent } = frame;
     $('connectionActivityLabel').hidden = !enabled;
     if (!enabled) return;
-    const visible = spatialActivityVisible();
-    const recent = recentWorkPreviews();
+    const visible = !!current;
     const names = { pad: 'Examining pads', via: 'Examining vias', grid: 'Preparing clearance grid', search: 'Testing search branches', candidate: 'Unverified candidate', trace: 'Examining traces', check: 'Checking geometry' };
     const details = { pad: 'Actual pad locations', via: 'Actual via locations', grid: 'Current grid area', search: 'Actual explored paths · not routed copper', candidate: 'Proposed path under evaluation', trace: 'Engine-reported trace', check: 'Current rule-check area' };
     const samples = visible ? [...recent, spatialActivity] : recent;
     const routeOnly = samples.length && samples.every(item => item.routeSample);
     const title = visible ? names[spatialActivity.kind] : (phaseName(activityJob()?.phase) || 'Engine activity');
-    $('activityVisualTitle').textContent = recent.length ? `${title} · current + recent` : title;
-    $('activityVisualDetail').textContent = recent.length ? (routeOnly ? `${samples.length} sampled net paths · recent samples fade · not routed copper` : `${samples.length} work samples · actual current + recent locations${samples.some(item => ['search', 'candidate'].includes(item.kind)) ? ' · candidate paths are unverified' : ''}`) : (visible ? (spatialActivity.label || details[spatialActivity.kind]) : (!board ? 'Waiting for board preview' : (spatialActivity ? 'Waiting for next location update' : 'No location reported for this stage')));
-    $('connectionActivityLabel').dataset.kind = visible ? spatialActivity.kind : (recent.length ? recent[recent.length - 1].kind : 'phase');
+    const titleText = recent.length ? `${title} · current + recent` : title;
+    const detailText = recent.length ? (routeOnly ? `${samples.length} sampled net paths · recent samples fade · not routed copper` : `${samples.length} work samples · actual current + recent locations${samples.some(item => ['search', 'candidate'].includes(item.kind)) ? ' · candidate paths are unverified' : ''}`) : (visible ? (spatialActivity.label || details[spatialActivity.kind]) : (!board ? 'Waiting for board preview' : (spatialActivity ? 'Waiting for next location update' : 'No location reported for this stage')));
+    const kind = visible ? spatialActivity.kind : (recent.length ? recent[recent.length - 1].kind : 'phase');
+    if ($('activityVisualTitle').textContent !== titleText) $('activityVisualTitle').textContent = titleText;
+    if ($('activityVisualDetail').textContent !== detailText) $('activityVisualDetail').textContent = detailText;
+    if ($('connectionActivityLabel').dataset.kind !== kind) $('connectionActivityLabel').dataset.kind = kind;
   }
 
   function workAnimationDuration(item, recent = false) {
     return recent ? 900 : (['search', 'candidate'].includes(item.kind) ? 120 : 700);
   }
 
-  function activityIsAnimating() {
-    if (reducedMotion.matches || !activityEnabled()) return false;
+  function activityIsAnimating(frame = activityFrameState()) {
+    if (reducedMotion.matches || !frame.enabled) return false;
     const now = performance.now();
-    return (spatialActivityVisible() && now - spatialActivity.receivedAt < workAnimationDuration(spatialActivity)) || recentWorkPreviews().some(item => now - item.receivedAt < workAnimationDuration(item, true));
+    return (frame.current && now - frame.current.receivedAt < workAnimationDuration(frame.current)) || frame.recent.some(item => now - item.receivedAt < workAnimationDuration(item, true));
   }
 
   function syncActivityVisual() {
-    stopActivityFrames();
     if (document.hidden || !$('showLiveWork').checked) { recentWorkActivity.clear(); spatialActivity = null; }
-    updateSpatialCaption();
-    paintActivity();
-    const recent = recentWorkPreviews();
-    const current = spatialActivityVisible();
+    if (!activityEnabled() || !board || !workActivityFamily()) {
+      stopActivityFrames();
+      const frame = activityFrameState();
+      updateSpatialCaption(frame); paintActivity(frame);
+      return;
+    }
+    // Worker reports never wait for a paint. Multiple reports and polling in
+    // one frame share a single overlay update instead of repainting eagerly.
+    activityPaintPending = true;
+    if (activityFrame === null) activityFrame = requestAnimationFrame(animateReportedPath);
+  }
+
+  function scheduleActivityExpiry({ current, recent }) {
+    if (activityExpiryTimer !== null) clearTimeout(activityExpiryTimer);
+    activityExpiryTimer = null;
     if (!current && !recent.length) return;
-    const expires = Math.min(current ? spatialActivity.expiresAt : Infinity, ...recent.map(item => item.expiresAt));
+    const expires = Math.min(current ? current.expiresAt : Infinity, ...recent.map(item => item.expiresAt));
     // Finished one-time animations need only a low-rate fade update.
     const fadeTick = recent.length && !reducedMotion.matches ? 250 : Infinity;
     activityExpiryTimer = setTimeout(() => { activityExpiryTimer = null; syncActivityVisual(); }, Math.max(1, Math.min(fadeTick, expires - Date.now() + 5)));
-    if (activityIsAnimating()) activityFrame = requestAnimationFrame(animateReportedPath);
   }
 
   function animateReportedPath() {
     activityFrame = null;
     if (!activityEnabled()) { syncActivityVisual(); return; }
-    if (performance.now() - lastActivityPaintAt >= 30) paintActivity();
-    if (activityIsAnimating()) activityFrame = requestAnimationFrame(animateReportedPath);
-    else paintActivity();
+    const frame = activityFrameState();
+    const animating = activityIsAnimating(frame);
+    if (performance.now() - lastActivityPaintAt >= activityFrameDelay || !animating) {
+      activityPaintPending = false;
+      paintActivity(frame); updateSpatialCaption(frame); scheduleActivityExpiry(frame);
+    }
+    if (activityPaintPending || animating) activityFrame = requestAnimationFrame(animateReportedPath);
   }
 
   function strokeActivityPath(path, distance, color) {
     if (!path.points.length) return;
+    const geometry = activityScreenGeometry(path.points);
+    if (distance >= path.length && typeof Path2D === 'function') {
+      if (!geometry.path) {
+        geometry.path = new Path2D();
+        geometry.path.moveTo(...geometry.points[0]);
+        for (let i = 1; i < geometry.points.length; i++) geometry.path.lineTo(...geometry.points[i]);
+      }
+      activityCtx.lineWidth = 6; activityCtx.strokeStyle = '#07131de6'; activityCtx.stroke(geometry.path);
+      activityCtx.lineWidth = 2.7; activityCtx.strokeStyle = color; activityCtx.stroke(geometry.path);
+      return geometry.points[geometry.points.length - 1];
+    }
     let remaining = Math.max(0, distance);
-    let tip = worldToScreen(...path.points[0]);
+    let tip = geometry.points[0];
     activityCtx.beginPath(); activityCtx.moveTo(...tip);
     for (let i = 0; i < path.lengths.length && remaining > 0; i++) {
       const fraction = path.lengths[i] ? Math.min(1, remaining / path.lengths[i]) : 1;
-      const a = path.points[i], b = path.points[i + 1];
-      tip = worldToScreen(a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction);
+      const a = geometry.points[i], b = geometry.points[i + 1];
+      tip = fraction === 1 ? b : [a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction];
       activityCtx.lineTo(...tip);
       remaining -= path.lengths[i];
     }
@@ -1017,29 +1159,48 @@
       activityCtx.fillStyle = '#f1ffff'; activityCtx.strokeStyle = '#173944'; activityCtx.lineWidth = 1.5; activityCtx.fill(); activityCtx.stroke();
     }
     activityCtx.fillStyle = color; activityCtx.strokeStyle = color; activityCtx.lineWidth = 2;
-    for (const point of visual.points) {
-      if (!spatialLayerVisible(point[2] ?? visual.layer)) continue;
-      const [x, y] = worldToScreen(point[0], point[1]);
-      activityCtx.globalAlpha = alpha;
-      activityCtx.beginPath(); activityCtx.arc(x, y, visual.kind === 'search' ? 2.5 : 7, 0, Math.PI * 2);
-      if (visual.kind === 'search') { activityCtx.globalAlpha = alpha * .7; activityCtx.fill(); }
-      else {
-        activityCtx.stroke(); activityCtx.beginPath(); activityCtx.moveTo(x - 3, y); activityCtx.lineTo(x + 3, y); activityCtx.moveTo(x, y - 3); activityCtx.lineTo(x, y + 3); activityCtx.stroke();
-        if (fraction < 1) {
-          activityCtx.globalAlpha = alpha * (1 - fraction) * .7;
-          activityCtx.beginPath(); activityCtx.arc(x, y, 7 + 9 * fraction, 0, Math.PI * 2); activityCtx.stroke();
-        }
+    const screenPoints = activityScreenGeometry(visual.points).points;
+    const visiblePoints = [];
+    for (const [index, point] of visual.points.entries()) {
+      if (spatialLayerVisible(point[2] ?? visual.layer)) visiblePoints.push(screenPoints[index]);
+    }
+    // A sample shares style and opacity. Batch its independent glyphs into
+    // one stroke; moveTo keeps pads entirely disconnected from one another.
+    if (visiblePoints.length) {
+      const searchPoints = visual.kind === 'search';
+      const radius = searchPoints ? 2.5 : 7;
+      activityCtx.globalAlpha = alpha * (searchPoints ? .7 : 1);
+      activityCtx.beginPath();
+      for (const [x, y] of visiblePoints) {
+        activityCtx.moveTo(x + radius, y); activityCtx.arc(x, y, radius, 0, Math.PI * 2);
+        if (!searchPoints) { activityCtx.moveTo(x - 3, y); activityCtx.lineTo(x + 3, y); activityCtx.moveTo(x, y - 3); activityCtx.lineTo(x, y + 3); }
+      }
+      if (searchPoints) activityCtx.fill(); else activityCtx.stroke();
+      if (!searchPoints && fraction < 1) {
+        const pulseRadius = 7 + 9 * fraction;
+        activityCtx.globalAlpha = alpha * (1 - fraction) * .7;
+        activityCtx.beginPath();
+        for (const [x, y] of visiblePoints) { activityCtx.moveTo(x + pulseRadius, y); activityCtx.arc(x, y, pulseRadius, 0, Math.PI * 2); }
+        activityCtx.stroke();
       }
     }
     activityCtx.restore();
   }
 
-  function paintActivity() {
-    lastActivityPaintAt = performance.now();
-    activityCtx.clearRect(0, 0, view.width, view.height);
-    if (!activityEnabled() || !board) return;
-    for (const recent of recentWorkPreviews()) paintWorkSample(recent, true);
-    if (spatialActivityVisible()) paintWorkSample(spatialActivity);
+  function paintActivity(frame = activityFrameState()) {
+    const startedAt = performance.now();
+    lastActivityPaintAt = startedAt;
+    const hasSamples = !!(frame.enabled && board && (frame.current || frame.recent.length));
+    if (activityHasPixels || hasSamples) activityCtx.clearRect(0, 0, view.width, view.height);
+    activityHasPixels = false;
+    if (!frame.enabled || !board) return;
+    for (const recent of frame.recent) paintWorkSample(recent, true);
+    if (frame.current) paintWorkSample(frame.current);
+    activityHasPixels = hasSamples;
+    activityPaintCost = activityPaintCost * .75 + (performance.now() - startedAt) * .25;
+    // Keep animation affordable on slower machines without delaying worker
+    // messages or routing. Actual locations and the sample limit stay intact.
+    activityFrameDelay = Math.max(30, Math.min(100, activityPaintCost * 20));
   }
 
   function path(points, closed = false) {
@@ -1144,18 +1305,32 @@
     }
   }
 
-  function getSettings() {
-    return { deepSearch: $('deepSearch').checked && !($('fanout').checked && $('fanoutOnly').checked), viaInPad: $('viaInPad').checked, fanout: $('fanout').checked, fanoutOnly: $('fanout').checked && $('fanoutOnly').checked, optimize: $('optimize').checked && !($('fanout').checked && $('fanoutOnly').checked), maxPasses: Number($('maxPasses').value), timeoutMinutes: Number($('timeoutMinutes').value) };
+  function readRoutingOptions() {
+    return { deepSearch: $('deepSearch').checked, viaInPad: $('viaInPad').checked, fanout: $('fanout').checked, fanoutOnly: $('fanoutOnly').checked, optimize: $('optimize').checked, preferredDirections: $('preferredDirections').checked, maxPasses: Number($('maxPasses').value), timeoutMinutes: Number($('timeoutMinutes').value) };
   }
 
-  function saveSettings() { try { localStorage.setItem('ramenrouter.browser.settings.v1', JSON.stringify(getSettings())); } catch {} }
+  function writeRoutingOptions(settings) {
+    for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad', 'preferredDirections']) if (typeof settings[key] === 'boolean') $(key).checked = settings[key];
+    for (const key of ['maxPasses', 'timeoutMinutes']) if (Number.isFinite(settings[key])) $(key).value = settings[key];
+  }
 
-  async function startRouting(enableViaInPad = false) {
-    if (busy || isActive() || !connected || !$('settingsForm').reportValidity()) return;
+  function getSettings() {
+    const settings = readRoutingOptions(), fanoutOnly = settings.fanout && settings.fanoutOnly;
+    return { ...settings, fanoutOnly, deepSearch: settings.deepSearch && !fanoutOnly, optimize: settings.optimize && !fanoutOnly };
+  }
+
+  function saveSettings(settings = readRoutingOptions()) { try { localStorage.setItem('ramenrouter.browser.settings.v1', JSON.stringify(settings)); } catch {} }
+
+  async function startRouting(enableViaInPad = false, relaxDirections = false) {
+    if (busy || isActive() || !connected || $('netLayersDialog').open || !$('settingsForm').checkValidity()) return;
     if (enableViaInPad) {
       if (!canSuggestViaInPad()) return;
       $('viaInPad').checked = true;
       document.querySelector('.advanced-rules').open = true;
+    }
+    if (relaxDirections) {
+      if (!canSuggestRelaxingDirections()) return;
+      $('preferredDirections').checked = false;
     }
     acknowledgeAttention();
     busy = true; updateControls();
@@ -1166,7 +1341,7 @@
   function restoreSettings() {
     try {
       const settings = JSON.parse(localStorage.getItem('ramenrouter.browser.settings.v1') || '{}');
-      for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad']) if (typeof settings[key] === 'boolean') $(key).checked = settings[key];
+      for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad', 'preferredDirections']) if (typeof settings[key] === 'boolean') $(key).checked = settings[key];
       if (Number.isInteger(settings.maxPasses) && settings.maxPasses >= 1 && settings.maxPasses <= 100) $('maxPasses').value = settings.maxPasses;
       if (Number.isInteger(settings.timeoutMinutes) && settings.timeoutMinutes >= 1 && settings.timeoutMinutes <= 1440) $('timeoutMinutes').value = settings.timeoutMinutes;
     } catch {}
@@ -1227,6 +1402,32 @@
     });
   }
 
+  function setRoutingRulesTab(section, focus = false) {
+    const options = section === 'options';
+    for (const [id, selected] of [['routingOptionsTab', options], ['netRulesTab', !options]]) {
+      $(id).setAttribute('aria-selected', String(selected)); $(id).tabIndex = selected ? 0 : -1;
+      if (selected && focus) $(id).focus();
+    }
+    $('routingOptionsPanel').hidden = !options;
+    $('netRulesPanel').hidden = options;
+  }
+
+  function updateDirectionPreview() {
+    const layers = netLayersData?.layers || [];
+    if (layers.length < 2) {
+      $('directionLayerPreview').textContent = 'Alternating directions needs at least two copper layers. A single-layer board keeps its usual routing behavior.';
+      return;
+    }
+    const preview = layers.map(layer => `${layer.displayName || layer.name}: ${layer.preferredDirection === 'vertical' ? 'vertical ↕' : layer.preferredDirection === 'horizontal' ? 'horizontal ↔' : 'no preference'}`).join(' · ');
+    $('directionLayerPreview').textContent = `${$('preferredDirections').checked ? 'Preferred directions' : 'If enabled'}: ${preview}`;
+  }
+
+  function discardRoutingRuleDraft() {
+    if (routingOptionsBeforeDialog) writeRoutingOptions(routingOptionsBeforeDialog);
+    routingOptionsBeforeDialog = null;
+    netLayersData = null; netLayerDrafts.clear(); netShortDrafts.clear();
+  }
+
   function updateNetLayerDraftStatus() {
     if (!netLayersData) return;
     let changed = 0, invalid = 0, inaccessible = 0;
@@ -1273,7 +1474,9 @@
     $('netLayerValidation').textContent = invalid ? `Select at least one layer for every net. ${number(invalid)} ${invalid === 1 ? 'net needs' : 'nets need'} a layer, including any hidden by your search.` : '';
     $('netLayerPadWarning').hidden = !inaccessible;
     $('netLayerPadWarning').textContent = inaccessible ? `${number(inaccessible)} ${inaccessible === 1 ? 'pad has' : 'pads have'} no selected layer in common. Vias in SMD pads may be needed to reach these nets. Check the pad layout and via rules; these selections may leave connections unrouted.` : '';
-    $('applyNetLayers').disabled = unavailable || invalid > 0 || changed === 0;
+    const optionsChanged = routingOptionsBeforeDialog && JSON.stringify(readRoutingOptions()) !== JSON.stringify(routingOptionsBeforeDialog);
+    $('applyNetLayers').disabled = unavailable || invalid > 0 || (!changed && !optionsChanged);
+    $('netLayersApplyNote').textContent = changed ? 'Save your current result first. Changing net rules replaces the routed result with the input board; imported copper stays. Routing options are saved only after these net rules pass their checks.' : 'Routing options apply to your next run. Your current result stays available.';
     $('resetAllNetLayers').disabled = unavailable || netLayersData.nets.every(net => sameRoutingRule(net, true));
     $('netLayerSearch').disabled = unavailable;
   }
@@ -1368,23 +1571,39 @@
       netLayersData = { ...data, layers: displayLayers(data.layers), nets: [...data.nets].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true, sensitivity: 'base' })) };
       netLayerDrafts = new Map(netLayersData.nets.map(net => [net.id, new Set(net.allowedLayers)]));
       netShortDrafts = new Map(netLayersData.nets.map(net => [net.id, Boolean(net.preferShort)]));
+      routingOptionsBeforeDialog = readRoutingOptions();
+      $('routingRulesError').hidden = true;
       $('netLayerSearch').value = '';
       renderNetLayerRows();
+      setRoutingRulesTab('options'); updateDirectionPreview();
       $('netLayersDialog').showModal();
     } catch (error) { toast(error.message, true); }
-    finally { busy = false; updateControls(); if ($('netLayersDialog').open) $('netLayerSearch').focus(); }
+    finally { busy = false; updateControls(); if ($('netLayersDialog').open) $('routingOptionsTab').focus(); }
   }
 
   async function applyNetLayers() {
     const data = netLayersData;
     if (!data || !connected || busy || isActive() || currentState?.job?.id !== data.jobId) return;
-    if (data.nets.some(net => !netLayerDrafts.get(net.id).size)) { updateNetLayerDraftStatus(); return; }
+    if (!$('settingsForm').checkValidity()) { setRoutingRulesTab('options'); $('settingsForm').reportValidity(); return; }
+    if (data.nets.some(net => !netLayerDrafts.get(net.id).size)) { setRoutingRulesTab('nets'); updateNetLayerDraftStatus(); return; }
     const changes = data.nets.filter(net => !sameRoutingRule(net)).map(net => ({ netId: net.id, layers: data.layers.filter(layer => netLayerDrafts.get(net.id).has(layer.id)).map(layer => layer.id), preferShort: netShortDrafts.get(net.id) }));
-    if (!changes.length) return;
-    $('netLayersDialog').close();
+    const options = readRoutingOptions(), previous = routingOptionsBeforeDialog;
+    if (!changes.length) {
+      routingOptionsBeforeDialog = null; saveSettings(options); discardRoutingRuleDraft(); $('netLayersDialog').close();
+      updateControls(); toast('Routing options saved. Your current result is kept.'); return;
+    }
+    $('routingRulesError').hidden = true;
     busy = true; updateControls();
-    try { await post('/api/routing-rules', { jobId: data.jobId, changes }); }
-    catch (error) { toast(`Routing rules were not applied. ${error.message}`, true); }
+    try {
+      const state = await api('/api/routing-rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jobId: data.jobId, changes }) });
+      if (!state?.job) throw new Error('The engine did not confirm the routing rule update.');
+      pendingRoutingOptions = { sourceJobId: data.jobId, transactionJobId: state.job.id, options, previous };
+      discardRoutingRuleDraft(); $('netLayersDialog').close(); applyState(state);
+    }
+    catch (error) {
+      pendingRoutingOptions = null;
+      $('routingRulesError').textContent = `Routing rules were not applied. ${error.message}`; $('routingRulesError').hidden = false;
+    }
     finally { busy = false; updateControls(); }
   }
 
@@ -1421,7 +1640,16 @@
   $('applyNetLayers').addEventListener('click', () => void applyNetLayers());
   $('cancelNetLayers').addEventListener('click', () => $('netLayersDialog').close());
   $('closeNetLayers').addEventListener('click', () => $('netLayersDialog').close());
-  $('netLayersDialog').addEventListener('close', () => { netLayersData = null; netLayerDrafts.clear(); netShortDrafts.clear(); });
+  $('netLayersDialog').addEventListener('close', () => { discardRoutingRuleDraft(); updateControls(); });
+  $('netLayersDialog').addEventListener('cancel', event => { if (busy) event.preventDefault(); });
+  $('routingOptionsTab').addEventListener('click', () => setRoutingRulesTab('options'));
+  $('netRulesTab').addEventListener('click', () => setRoutingRulesTab('nets'));
+  for (const id of ['routingOptionsTab', 'netRulesTab']) $(id).addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const options = event.key === 'Home' || (event.key !== 'End' && id === 'netRulesTab');
+    setRoutingRulesTab(options ? 'options' : 'nets', true);
+  });
   $('netLayerSearch').addEventListener('input', updateNetLayerDraftStatus);
   $('resetAllNetLayers').addEventListener('click', () => {
     if (!netLayersData || busy || isActive() || currentState?.job?.id !== netLayersData.jobId) return;
@@ -1444,14 +1672,20 @@
     finally { busy = false; updateControls(); }
   });
   $('settingsForm').addEventListener('submit', event => event.preventDefault());
-  $('settingsForm').addEventListener('change', () => { saveSettings(); updateControls(); });
+  $('settingsForm').addEventListener('input', updateNetLayerDraftStatus);
+  $('settingsForm').addEventListener('change', () => { updateControls(); updateDirectionPreview(); });
   $('runButton').addEventListener('click', () => void startRouting());
   $('enableViaRetry').addEventListener('click', () => void startRouting(true));
+  $('relaxDirectionsRetry').addEventListener('click', () => void startRouting(false, true));
+  $('dismissDirectionSuggestion').addEventListener('click', () => { dismissedDirectionJobId = currentState?.job?.id; acknowledgeAttention(); updateControls(); });
   $('dismissViaSuggestion').addEventListener('click', () => {
     dismissedSuggestionJobId = currentState?.job?.id;
     updateControls();
   });
   $('viewBestResult').addEventListener('click', viewBestResult);
+  $('extendTimeButton').addEventListener('click', () => void extendRoutingTime());
+  $('finishTimedRun').addEventListener('click', () => void finishTimedRun());
+  $('extraTimeMinutes').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); void extendRoutingTime(); } });
   $('viewStoppedResult').addEventListener('click', viewBestResult);
   $('keepStopped').addEventListener('click', () => { acknowledgeAttention(); dismissedStopJobId = currentState?.job?.id; updateControls(); });
   $('stopButton').addEventListener('click', async () => {

@@ -25,7 +25,7 @@
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M5 20h30c-1 10-7 15-15 15S6 30 5 20Zm6 15h18M10 7v5h8v8m9-16v8h-4v8M4 15h13M25 15h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="5" r="2" fill="currentColor"/><circle cx="27" cy="3" r="2" fill="currentColor"/></svg>
       <span>Ramen<span class="brand-light">Router</span><span class="brand-caption">PCB ROUTING WORKBENCH</span></span>
     </div>
-    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.14</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
+    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.15</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
     <div class="connection" id="connection"><span class="status-dot"></span><span id="connectionText">Starting browser engine</span></div>
     <button class="icon-button help-button" id="helpButton" title="About this workbench" aria-label="About this workbench">?</button>
   </header>
@@ -55,20 +55,7 @@
         <p id="netLayersSummary">Choose layers and prioritize shorter routes for each net.</p>
       </div>
 
-      <form id="settingsForm">
-        <div class="setting-block fanout-setting">
-          <label class="switch-row" for="fanout"><span><strong>Ramen SMD escape</strong></span><span class="switch"><input type="checkbox" id="fanout" name="fanout" checked><span class="switch-track"></span></span></label>
-          <p>Add short pad escapes to make room for routes around surface-mount components.</p>
-          <label class="checkbox-row fanout-only" id="fanoutOnlyRow" hidden><input type="checkbox" id="fanoutOnly" name="fanoutOnly"><span>Pad escapes only · skip routing</span></label>
-        </div>
-        <div class="setting-block optimize-setting"><label class="switch-row" for="optimize"><span><strong>Optimize after routing</strong></span><span class="switch"><input type="checkbox" id="optimize" name="optimize" checked><span class="switch-track"></span></span></label><p>Refine completed routes and reduce vias.</p></div>
-        <div class="setting-block deep-search-setting"><label class="switch-row" for="deepSearch"><span><strong>Smart search</strong><span class="mini-badge">NEW</span></span><span class="switch"><input type="checkbox" id="deepSearch" name="deepSearch" checked><span class="switch-track"></span></span></label><p>Retry difficult nets and untangle the last few connections. Keep the best checked result.</p></div>
-        <details class="advanced-rules"><summary>Advanced rules <span>1 OPTION</span></summary>
-          <div class="setting-block via-in-pad-setting"><label class="switch-row" for="viaInPad"><span><strong>Override: allow vias in SMD pads</strong></span><span class="switch"><input type="checkbox" id="viaInPad" name="viaInPad"><span class="switch-track"></span></span></label><p>Changes the imported via-placement rule. Check fabrication suitability. Off preserves the input rule.</p></div>
-        </details>
-        <p class="rule-policy"><span aria-hidden="true">✓</span> Imported net widths enforced</p>
-        <div class="number-settings"><label for="maxPasses">Routing attempts <input type="number" id="maxPasses" name="maxPasses" min="1" max="100" step="1" value="12"><span>Includes repairs and fresh starts</span></label><label for="timeoutMinutes">Time limit <div class="number-unit"><input type="number" id="timeoutMinutes" name="timeoutMinutes" min="1" max="1440" step="1" value="30"><span>min</span></div><span>Entire job</span></label></div>
-      </form>
+
       </div>
       <div class="run-controls"><p class="net-layer-conflict" id="netLayerConflict" role="status" hidden></p><button class="primary-button" id="runButton" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6V4Z" fill="currentColor"/></svg><span id="runLabel">Start routing</span><span class="button-shortcut">↵</span></button><button class="stop-button" id="stopButton" hidden><span class="stop-square"></span>Stop job</button><button class="force-stop-button" id="forceStopButton" hidden>Force stop</button><button class="view-stopped-button" id="viewStoppedResult" type="button" hidden>View best result</button><p class="run-hint" id="runHint">Load a board to begin.</p></div>
       <div class="sidebar-foot"><span class="lock-icon" aria-hidden="true">⌁</span> Your board stays on this computer.</div>
@@ -100,6 +87,13 @@
         <p id="stopResultDetail" role="status" aria-live="polite"></p>
         <div class="stop-result-actions"><button id="viewBestResult" type="button">View best result</button><button id="keepStopped" type="button">Keep stopped</button></div>
       </section>
+      <section class="time-budget-prompt" id="timeBudgetPrompt" aria-labelledby="timeBudgetTitle" hidden>
+        <h3 id="timeBudgetTitle">Continue this run?</h3>
+        <p id="timeBudgetDetail" role="status" aria-live="polite"></p>
+        <label for="extraTimeMinutes">Extra time <span class="extra-time-input"><input type="number" id="extraTimeMinutes" min="1" max="1440" step="1" value="30" required><span>minutes</span></span></label>
+        <div class="time-budget-actions"><button id="extendTimeButton" type="button">Extend time</button><button id="finishTimedRun" type="button">Keep best &amp; stop</button></div>
+        <p id="timeBudgetStopDetail" class="time-budget-note"></p>
+      </section>
       <div class="elapsed-row"><span>Elapsed time</span><strong id="elapsedValue">—</strong></div>
       <section class="run-progress" id="runProgress" aria-label="Routing attempts and time budget" hidden>
         <div class="run-progress-card" id="attemptProgress"><span>Attempt #</span><strong id="attemptValue">Preparing</strong><small id="attemptDetail">Waiting for engine counters</small></div>
@@ -125,6 +119,7 @@
         <details class="advice-label-note" id="placementLabelNote" hidden><summary>Original component labels unavailable</summary><p id="placementLabelDetail">This DSN does not include the original component labels. Use the pad, net and location shown below.</p></details>
         <div class="advice-findings" id="placementAdviceItems"></div>
       </section>
+      <section class="via-suggestion direction-suggestion" id="directionSuggestion" aria-labelledby="directionSuggestionTitle" hidden><h3 id="directionSuggestionTitle">Try without preferred directions?</h3><p id="directionSuggestionDetail"></p><p class="suggestion-note">Relaxing this preference may help, but it may not be the reason connections remain. Save your current result before starting again.</p><div class="suggestion-actions"><button id="relaxDirectionsRetry" type="button">Turn off preference &amp; retry</button><button id="dismissDirectionSuggestion" type="button">Keep current result</button></div></section>
       <section class="via-suggestion" id="viaSuggestion" aria-labelledby="viaSuggestionTitle" aria-live="polite" hidden>
         <h3 id="viaSuggestionTitle">Try vias in SMD pads?</h3>
         <p id="viaSuggestionDetail"></p>
@@ -143,7 +138,7 @@
       <button id="downloadSes" class="export-button" disabled><span class="export-file-type">SES</span><span><strong>Routing session</strong><small>Import into your PCB editor</small></span><span class="download-arrow" aria-hidden="true">↓</span></button>
       <div class="secondary-downloads"><button id="downloadDsn" class="text-button" disabled>Routed DSN <span aria-hidden="true">↓</span></button><button id="downloadChecks" class="text-button" disabled>Check report <span aria-hidden="true">↓</span></button><button id="downloadLog" class="text-button" disabled>Engine log <span aria-hidden="true">↓</span></button></div>
       <p class="export-note">Check clearances, connectivity and design rules in your PCB editor before manufacturing.</p>
-      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.14</span><span>Independent browser engine · GPL-3.0</span></div>
+      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.15</span><span>Independent browser engine · GPL-3.0</span></div>
       </div>
     </aside>
   </main>
@@ -151,17 +146,39 @@
   <dialog id="netLayersDialog" class="net-layers-dialog" aria-labelledby="netLayersTitle" aria-describedby="netLayersDescription netLayersApplyNote">
     <div class="dialog-header"><span class="section-kicker">ROUTING RULES</span><button id="closeNetLayers" class="icon-button" type="button" aria-label="Cancel routing rule changes">×</button></div>
     <h2 id="netLayersTitle">Routing rules</h2>
-    <p id="netLayersDescription">Choose the layers each net may use and which nets should prefer shorter routes. Reset restores the imported settings.</p>
+    <p id="netLayersDescription">Choose how RamenRouter works, then set any rules for individual nets. Changes take effect when you apply them.</p>
+    <div class="routing-rule-tabs" role="tablist" aria-label="Routing rule sections"><button id="routingOptionsTab" type="button" role="tab" aria-controls="routingOptionsPanel" aria-selected="true">Routing options</button><button id="netRulesTab" type="button" role="tab" aria-controls="netRulesPanel" aria-selected="false" tabindex="-1">Net rules</button></div>
+    <section id="routingOptionsPanel" role="tabpanel" aria-labelledby="routingOptionsTab">
+      <form id="settingsForm">
+        <div class="setting-block fanout-setting">
+          <label class="switch-row" for="fanout"><span><strong>Ramen SMD escape</strong></span><span class="switch"><input type="checkbox" id="fanout" name="fanout" checked><span class="switch-track"></span></span></label>
+          <p>Add short pad escapes to make room for routes around surface-mount components.</p>
+          <label class="checkbox-row fanout-only" id="fanoutOnlyRow" hidden><input type="checkbox" id="fanoutOnly" name="fanoutOnly"><span>Pad escapes only · skip routing</span></label>
+        </div>
+        <div class="setting-block optimize-setting"><label class="switch-row" for="optimize"><span><strong>Optimize after routing</strong></span><span class="switch"><input type="checkbox" id="optimize" name="optimize" checked><span class="switch-track"></span></span></label><p>Refine completed routes and reduce vias.</p></div>
+        <div class="setting-block deep-search-setting"><label class="switch-row" for="deepSearch"><span><strong>Smart search</strong></span><span class="switch"><input type="checkbox" id="deepSearch" name="deepSearch" checked><span class="switch-track"></span></span></label><p>Retry difficult nets and untangle the last few connections. Keep the best checked result.</p></div>
+        <div class="setting-block direction-setting"><label class="switch-row" for="preferredDirections"><span><strong>Prefer alternating layer directions</strong></span><span class="switch"><input type="checkbox" id="preferredDirections" name="preferredDirections"><span class="switch-track"></span></span></label><p>Favor vertical routes on one layer and horizontal routes on the next. Routes may bend or cross directions when needed; this is a preference, not a restriction.</p><p id="directionLayerPreview" class="direction-layer-preview"></p></div>
+        <details class="advanced-rules"><summary>Advanced rules <span>1 OPTION</span></summary>
+          <div class="setting-block via-in-pad-setting"><label class="switch-row" for="viaInPad"><span><strong>Override: allow vias in SMD pads</strong></span><span class="switch"><input type="checkbox" id="viaInPad" name="viaInPad"><span class="switch-track"></span></span></label><p>Changes the imported via-placement rule. Check fabrication suitability. Off preserves the input rule.</p></div>
+        </details>
+        <p class="rule-policy"><span aria-hidden="true">✓</span> Imported net widths enforced</p>
+        <div class="number-settings"><label for="maxPasses">Routing attempts <input type="number" id="maxPasses" name="maxPasses" min="1" max="100" step="1" value="12" required><span>Includes repairs and fresh starts</span></label><label for="timeoutMinutes">Time limit <div class="number-unit"><input type="number" id="timeoutMinutes" name="timeoutMinutes" min="1" max="1440" step="1" value="30" required><span>min</span></div><span>Entire job</span></label></div>
+      </form>
+    </section>
+    <section id="netRulesPanel" role="tabpanel" aria-labelledby="netRulesTab" hidden>
     <p id="netShortDescription"><strong>Prefer shorter routes</strong> gives selected nets earlier access to space and favors shorter paths, even if that needs more vias. Completing connections and obeying board rules come first. This does not guarantee the shortest possible path or match trace lengths.</p>
     <p class="net-layers-physical-note">Pads and through vias keep their physical layer spans. Selecting a layer here does not change the board’s construction.</p>
-    <p class="net-layers-apply-note" id="netLayersApplyNote"><strong>Save your current result first.</strong> Applying replaces the current routed result with the input board. Imported copper stays. Start routing when you are ready.</p>
-    <div class="net-layers-tools"><label for="netLayerSearch">Find a net<input id="netLayerSearch" type="search" placeholder="Search net names or USB*" aria-describedby="netLayerSearchHelp" autocomplete="off" autofocus></label><button id="resetAllNetLayers" type="button">Reset all to imported</button></div>
+
+    <div class="net-layers-tools"><label for="netLayerSearch">Find a net<input id="netLayerSearch" type="search" placeholder="Search net names or USB*" aria-describedby="netLayerSearchHelp" autocomplete="off"></label><button id="resetAllNetLayers" type="button">Reset all to imported</button></div>
     <p class="net-layer-bulk-help" id="netLayerSearchHelp">Use <strong>*</strong> for any number of characters: <strong>USB*</strong> starts with USB, <strong>*CLK</strong> ends with CLK, <strong>*CLK*</strong> contains CLK. Plain text finds any part of a name.</p>
     <p class="net-layer-bulk-help" id="netLayerBulkHelp">Each header checkbox changes all shown nets. Filter by name to change only matching nets.</p>
     <p class="net-layer-count" id="netLayerCount" role="status" aria-live="polite"></p>
     <div class="net-layer-table-scroll" tabindex="0" role="region" aria-label="Routing rules, scroll for more nets or columns"><table class="net-layer-table"><caption class="visually-hidden">Preferred shorter routes and allowed trace layers for each net</caption><thead id="netLayerHead"></thead><tbody id="netLayerRows"></tbody></table></div>
     <p class="net-layer-validation" id="netLayerValidation" role="status" aria-live="polite" hidden></p>
     <p class="net-layer-pad-warning" id="netLayerPadWarning" role="status" aria-live="polite" hidden></p>
+    </section>
+    <p class="net-layers-apply-note" id="netLayersApplyNote">Routing options apply to your next run. Your current result stays available.</p>
+    <p id="routingRulesError" class="net-layer-validation" role="alert" hidden></p>
     <div class="net-layer-actions"><button id="cancelNetLayers" type="button">Cancel</button><button id="applyNetLayers" type="button" disabled>Apply rules</button></div>
   </dialog>
   <dialog id="clearRoutingDialog" class="clear-routing-dialog" aria-labelledby="clearRoutingTitle" aria-describedby="clearRoutingDescription clearRoutingFixed clearRoutingPreserved">
