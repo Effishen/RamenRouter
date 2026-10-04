@@ -53,11 +53,14 @@ last-update time tells you when the engine most recently reported progress.
 With **Live work** enabled, the preview highlights the pads and copper being
 examined, the grid rows being prepared, and the actual search branches and
 candidate paths being tested. Trial paths are labelled separately from routed
-tracks. The current search stays bright while recent real paths fade out.
-The preview can show paths for up to a quarter of your board's nets at once,
-with a maximum of 25. It fills as the engine reports paths, so fewer may be
-visible. These are samples of current and recent work. Turn off **Live work**
-to hide these highlights. Reduced-motion settings keep the highlights still.
+tracks. The active item stays bright while recent work fades out. This applies
+to pad and via inspections, grid preparation, fanout, trace refinement and
+geometry checks as well as route searches. Highlights stay at the real
+locations being examined; paths follow the actual reported segments.
+The preview can show route paths for up to a quarter of your board's nets at
+once, with a maximum of 25 work samples. It fills as the engine reports work,
+so fewer may be visible. Turn off **Live work** to hide these highlights.
+Reduced-motion settings keep them still.
 
 Already have a partly or fully routed DSN? Choose **Clear routing & start over**
 below the loaded filename. After you confirm, RamenRouter removes all traces

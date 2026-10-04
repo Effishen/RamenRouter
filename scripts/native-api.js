@@ -7,7 +7,7 @@
   let job = null, worker = null, workerUrl = null, inputText = null;
   let board = null, preview = null, exports = null, bestChecked = null, clearTransaction = null, ruleTransaction = null, importedNetRules = null, serial = 0, timer = null, watchdog = null;
   const logs = [];
-  const base = {appVersion:'0.2.13',engineVersion:'Ramen JS 0.2.13',fanoutVersion:'Ramen SMD escape'};
+  const base = {appVersion:'0.2.14',engineVersion:'Ramen JS 0.2.14',fanoutVersion:'Ramen SMD escape'};
   function notifyActivity() {
     const update={jobId:job?.id,state:job?.state,phase:job?.phase,activity:job?.activity,lastEngineUpdateAt:job?.lastEngineUpdateAt,operation:job?.operation,counters:job?.counters,deadlineAt:job?.deadlineAt,remainingSeconds:remaining(),startedAt:job?.startedAt,endedAt:job?.endedAt};
     for(const fn of activitySubscribers){try{fn(update);}catch(_){}}
@@ -183,7 +183,7 @@
       const advice=placementAdvice(result,initialBoard,includeIncomplete);
       stage('exporting','Preparing the checked preview and downloadable results.',{},writeLog);
       return {board:result,preview:geometry(result,prepared?.connection),stats:finalStats,advice,fromInput,
-        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.13',settings:options,routingRules:{shorterNets:result.nets.filter(net=>net.preferShort).map(net=>net.name)},units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
+        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.14',settings:options,routingRules:{shorterNets:result.nets.filter(net=>net.preferShort).map(net=>net.name)},units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}};
     }
     self.onmessage=async event=>{
       const m=event.data;

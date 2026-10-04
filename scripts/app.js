@@ -43,8 +43,9 @@
   let activityEventKey = '';
   let spatialActivity = null;
   let activitySnapshot = null;
-  const recentRouteActivity = new Map();
-  let recentRouteJobKey = '';
+  const recentWorkActivity = new Map();
+  let recentWorkJobKey = '';
+  let recentWorkFamily = '';
   let lastActivityPaintAt = 0;
   let progressClock = null;
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -789,45 +790,82 @@
     return Math.max(1, Math.min(25, Math.ceil((Number.isFinite(netCount) ? netCount : 1) * .25)));
   }
 
-  function recentRouteStage(job = activityJob()) {
-    return job?.operation === 'run' && ['routing', 'rasterizing', 'finishing', 'deep_search', 'pad_escape', 'fanout'].includes(job.phase);
+  function workActivityFamily(job = activityJob()) {
+    if (['routing', 'rasterizing', 'finishing', 'deep_search', 'pad_escape'].includes(job?.phase)) return 'routing';
+    return ({ fanout: 'fanout', optimizing: 'refining', checking: 'checking', advising: 'advising' })[job?.phase] || '';
   }
 
-  function pruneRecentRoutes() {
+  function workSampleVisible(item) {
+    return item.paths.some(path => spatialLayerVisible(path.layer ?? item.layer)) || item.points.some(point => spatialLayerVisible(point[2] ?? item.layer)) || Boolean(item.bounds && spatialLayerVisible(item.layer));
+  }
+
+  function pruneRecentWork() {
     const now = Date.now();
-    for (const [key, item] of recentRouteActivity) if (item.expiresAt <= now) recentRouteActivity.delete(key);
-    // Reserve 1,024 vertices for the current path and its previous branch.
-    // Evict whole, oldest net samples; never join unrelated path fragments.
-    let vertices = [...recentRouteActivity.values()].reduce((sum, item) => sum + item.vertexCount, 0);
-    while (recentRouteActivity.size > routePreviewLimit() || vertices > 7168) {
-      const key = recentRouteActivity.keys().next().value;
-      vertices -= recentRouteActivity.get(key).vertexCount;
-      recentRouteActivity.delete(key);
+    for (const [key, item] of recentWorkActivity) if (item.expiresAt <= now || (item.family !== workActivityFamily() && item.family !== 'routing')) recentWorkActivity.delete(key);
+    // Search branches stay limited to a quarter of the nets. Other work uses
+    // object geometry, so many pads on one net remain separate actual samples.
+    let routeCount = [...recentWorkActivity.values()].filter(item => item.routeSample).length;
+    for (const [key, item] of recentWorkActivity) {
+      if (routeCount <= routePreviewLimit()) break;
+      if (item.routeSample) { recentWorkActivity.delete(key); routeCount--; }
+    }
+    // Reserve space for 512 current path vertices, 64 points, four bounds
+    // corners, and a 512-vertex previous branch: under 8,192 in total.
+    let coordinates = [...recentWorkActivity.values()].reduce((sum, item) => sum + item.coordinateCount, 0);
+    while (recentWorkActivity.size > 25 || coordinates > 7040) {
+      const key = recentWorkActivity.keys().next().value;
+      coordinates -= recentWorkActivity.get(key).coordinateCount;
+      recentWorkActivity.delete(key);
     }
   }
 
-  function recentRoutePreviews() {
-    if (!activityEnabled() || !board || !recentRouteStage()) return [];
-    pruneRecentRoutes();
+  function recentWorkPreviews() {
+    if (!activityEnabled() || !board || !workActivityFamily()) return [];
+    pruneRecentWork();
     const current = spatialActivityVisible() ? spatialActivity : null;
-    const reserved = current?.paths.length ? 1 : 0;
-    const available = routePreviewLimit() - reserved;
-    return available > 0 ? [...recentRouteActivity.values()].filter(item => item.netKey !== current?.netKey && item.paths.some(path => spatialLayerVisible(path.layer ?? item.layer))).slice(-available) : [];
+    const available = 25 - (current ? 1 : 0);
+    let routeSlots = routePreviewLimit() - (current?.routeSample ? 1 : 0);
+    const previews = [];
+    for (const item of [...recentWorkActivity.values()].reverse()) {
+      if (item.family !== workActivityFamily() || item.sampleKey === current?.sampleKey || !workSampleVisible(item)) continue;
+      if (item.routeSample && routeSlots-- <= 0) continue;
+      previews.push(item);
+      if (previews.length === available) break;
+    }
+    return previews.reverse();
   }
 
   function receiveSpatialActivity(job) {
     const jobKey = `${job?.id || ''}|${job?.startedAt || ''}|${job?.operation || ''}`;
-    if (jobKey !== recentRouteJobKey || !activeStates.has(job?.state) || job?.state === 'stopping' || job?.operation !== 'run') {
-      recentRouteActivity.clear();
-      if (jobKey !== recentRouteJobKey) { spatialActivity = null; activityEventKey = ''; }
-      recentRouteJobKey = jobKey;
+    const family = workActivityFamily(job);
+    const newJob = jobKey !== recentWorkJobKey;
+    const active = activeStates.has(job?.state) && job?.state !== 'stopping';
+    const completionFamily = job?.activity?.complete ? (workActivityFamily({ phase: job.activity.phase }) || recentWorkFamily || family) : '';
+    // Phase-only updates can carry the previous activity sequence. Suppress
+    // incompatible samples before that sequence's early-return check.
+    if (newJob || !active) {
+      recentWorkActivity.clear();
+      spatialActivity = null;
+      if (newJob) activityEventKey = '';
+    } else if (family !== recentWorkFamily || !family || job?.activity?.complete) {
+      // Checked checkpoints briefly visit checking/advice/export. Keep route
+      // samples bounded and hidden there so the next net can share their view.
+      // Other families end on exit; completion ends only its own work family.
+      for (const [sampleKey, item] of recentWorkActivity) {
+        if ((item.family !== family && item.family !== 'routing') || (completionFamily && item.family === completionFamily)) recentWorkActivity.delete(sampleKey);
+      }
+      spatialActivity = null;
     }
+    recentWorkJobKey = jobKey;
+    recentWorkFamily = family;
     const report = job?.activity;
     const key = `${job?.id || ''}|${report?.sequence ?? report?.updatedAt ?? ''}`;
     if (key === activityEventKey) return;
     activityEventKey = key;
     const previous = spatialActivity;
     spatialActivity = null;
+    if (!active || !family) return;
+    if (report?.complete) return;
     const visual = report?.visual;
     if (!visual || !['pad', 'via', 'grid', 'search', 'candidate', 'trace', 'check'].includes(visual.kind)) return;
     let remainingVertices = 512;
@@ -837,23 +875,23 @@
       const path = activityPath(item, remainingVertices);
       if (path) { paths.push(path); remainingVertices -= path.points.length; }
     }
-    const points = (Array.isArray(visual.points) ? visual.points : []).filter(point => Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1])).slice(0, 512);
+    const points = (Array.isArray(visual.points) ? visual.points : []).filter(point => Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1])).slice(0, 64);
     const bounds = Array.isArray(visual.bounds) && visual.bounds.length === 4 && visual.bounds.every(Number.isFinite) ? visual.bounds : null;
     if (!paths.length && !points.length && !bounds) return;
     const searchId = visual.searchId ?? report.searchId;
     const reportedAt = Number.isFinite(report.updatedAt) ? report.updatedAt : Date.now();
-    const animated = visual.kind === 'search' || visual.kind === 'candidate';
     const netKey = report.netId !== undefined && report.netId !== null ? String(report.netId) : (report.netName ? `name:${report.netName}` : null);
-    spatialActivity = { kind: visual.kind, label: visual.label, layer: visual.layer, points, paths, bounds, searchId, netKey, receivedAt: performance.now(), expiresAt: reportedAt + 2000, animated };
-    // Store only actual search/candidate samples, with one latest sample per net.
-    // Replays extend once along those segments; they are not parallel routing.
-    if (animated && paths.length && netKey !== null && !document.hidden && $('showLiveWork').checked && recentRouteStage(job) && activeStates.has(job.state) && job.state !== 'stopping' && reportedAt + 12000 > Date.now()) {
-      recentRouteActivity.delete(netKey);
-      recentRouteActivity.set(netKey, { ...spatialActivity, paths: paths.map(path => ({ ...path })), points: [], bounds: null, expiresAt: reportedAt + 12000, vertexCount: paths.reduce((sum, path) => sum + path.points.length, 0) });
-      pruneRecentRoutes();
+    const routeSample = family === 'routing' && ['search', 'candidate'].includes(visual.kind) && paths.length > 0 && netKey !== null;
+    const sampleKey = routeSample ? `route:${netKey}` : JSON.stringify([visual.kind, report.stage || family, visual.layer, points, paths.map(path => [path.layer, path.points]), bounds]);
+    spatialActivity = { kind: visual.kind, label: visual.label, layer: visual.layer, points, paths, bounds, searchId, netKey, sampleKey, family, routeSample, receivedAt: performance.now(), expiresAt: reportedAt + 2000 };
+    // Retain exact reported locations and segments. A finite replay is a view
+    // of recent work, never an assertion that these objects run in parallel.
+    if (board && !document.hidden && $('showLiveWork').checked && reportedAt + 12000 > Date.now()) {
+      recentWorkActivity.delete(sampleKey);
+      recentWorkActivity.set(sampleKey, { ...spatialActivity, paths: paths.map(path => ({ ...path })), expiresAt: reportedAt + 12000, coordinateCount: paths.reduce((sum, path) => sum + path.points.length, 0) + points.length + (bounds ? 4 : 0) });
+      pruneRecentWork();
     }
-    // Only shared, engine-reported segments can retract into a new search branch.
-    // A truncated or unrelated branch is revealed separately; no link is invented.
+    // Only shared, engine-reported segments can retract into a new branch.
     if (visual.kind === 'search' && previous?.kind === 'search' && searchId !== undefined && previous.searchId === searchId) {
       for (const [i, path] of paths.entries()) {
         const before = previous.paths[i];
@@ -875,7 +913,7 @@
   }
 
   function spatialActivityVisible() {
-    return activityEnabled() && !!board && !!spatialActivity && Date.now() < spatialActivity.expiresAt;
+    return activityEnabled() && !!board && !!spatialActivity && spatialActivity.family === workActivityFamily() && Date.now() < spatialActivity.expiresAt && workSampleVisible(spatialActivity);
   }
 
   function stopActivityFrames() {
@@ -889,33 +927,37 @@
     $('connectionActivityLabel').hidden = !enabled;
     if (!enabled) return;
     const visible = spatialActivityVisible();
-    const recent = recentRoutePreviews();
-    const names = { pad: 'Examining pad', via: 'Examining via', grid: 'Preparing clearance grid', search: 'Testing search branches', candidate: 'Unverified candidate', trace: 'Examining trace', check: 'Checking geometry' };
-    const details = { pad: 'Actual pad location', via: 'Actual via location', grid: 'Current grid area', search: 'Actual explored paths · not routed copper', candidate: 'Proposed path under evaluation', trace: 'Engine-reported trace', check: 'Current rule-check area' };
-    const currentPaths = visible && spatialActivity.paths.some(path => spatialLayerVisible(path.layer ?? spatialActivity.layer)) && ['search', 'candidate'].includes(spatialActivity.kind) ? 1 : 0;
-    const count = recent.length + currentPaths;
+    const recent = recentWorkPreviews();
+    const names = { pad: 'Examining pads', via: 'Examining vias', grid: 'Preparing clearance grid', search: 'Testing search branches', candidate: 'Unverified candidate', trace: 'Examining traces', check: 'Checking geometry' };
+    const details = { pad: 'Actual pad locations', via: 'Actual via locations', grid: 'Current grid area', search: 'Actual explored paths · not routed copper', candidate: 'Proposed path under evaluation', trace: 'Engine-reported trace', check: 'Current rule-check area' };
+    const samples = visible ? [...recent, spatialActivity] : recent;
+    const routeOnly = samples.length && samples.every(item => item.routeSample);
     const title = visible ? names[spatialActivity.kind] : (phaseName(activityJob()?.phase) || 'Engine activity');
     $('activityVisualTitle').textContent = recent.length ? `${title} · current + recent` : title;
-    $('activityVisualDetail').textContent = recent.length ? `${count} sampled net ${count === 1 ? 'path' : 'paths'} · recent samples fade · not routed copper` : (visible ? (spatialActivity.label || details[spatialActivity.kind]) : (!board ? 'Waiting for board preview' : (spatialActivity ? 'Waiting for next location update' : 'No location reported for this stage')));
-    $('connectionActivityLabel').dataset.kind = visible ? spatialActivity.kind : (recent.length ? 'search' : 'phase');
+    $('activityVisualDetail').textContent = recent.length ? (routeOnly ? `${samples.length} sampled net paths · recent samples fade · not routed copper` : `${samples.length} work samples · actual current + recent locations${samples.some(item => ['search', 'candidate'].includes(item.kind)) ? ' · candidate paths are unverified' : ''}`) : (visible ? (spatialActivity.label || details[spatialActivity.kind]) : (!board ? 'Waiting for board preview' : (spatialActivity ? 'Waiting for next location update' : 'No location reported for this stage')));
+    $('connectionActivityLabel').dataset.kind = visible ? spatialActivity.kind : (recent.length ? recent[recent.length - 1].kind : 'phase');
+  }
+
+  function workAnimationDuration(item, recent = false) {
+    return recent ? 900 : (['search', 'candidate'].includes(item.kind) ? 120 : 700);
   }
 
   function activityIsAnimating() {
     if (reducedMotion.matches || !activityEnabled()) return false;
     const now = performance.now();
-    return (spatialActivityVisible() && spatialActivity.animated && now - spatialActivity.receivedAt < 120) || recentRoutePreviews().some(item => now - item.receivedAt < 900);
+    return (spatialActivityVisible() && now - spatialActivity.receivedAt < workAnimationDuration(spatialActivity)) || recentWorkPreviews().some(item => now - item.receivedAt < workAnimationDuration(item, true));
   }
 
   function syncActivityVisual() {
     stopActivityFrames();
-    if (document.hidden || !$('showLiveWork').checked) recentRouteActivity.clear();
+    if (document.hidden || !$('showLiveWork').checked) { recentWorkActivity.clear(); spatialActivity = null; }
     updateSpatialCaption();
     paintActivity();
-    const recent = recentRoutePreviews();
+    const recent = recentWorkPreviews();
     const current = spatialActivityVisible();
     if (!current && !recent.length) return;
     const expires = Math.min(current ? spatialActivity.expiresAt : Infinity, ...recent.map(item => item.expiresAt));
-    // Recent samples fade at a low refresh rate once their one-time replay ends.
+    // Finished one-time animations need only a low-rate fade update.
     const fadeTick = recent.length && !reducedMotion.matches ? 250 : Infinity;
     activityExpiryTimer = setTimeout(() => { activityExpiryTimer = null; syncActivityVisual(); }, Math.max(1, Math.min(fadeTick, expires - Date.now() + 5)));
     if (activityIsAnimating()) activityFrame = requestAnimationFrame(animateReportedPath);
@@ -941,61 +983,63 @@
       activityCtx.lineTo(...tip);
       remaining -= path.lengths[i];
     }
-    // Two strokes share the same path; no blur or full-board repaint is needed.
     activityCtx.lineWidth = 6; activityCtx.strokeStyle = '#07131de6'; activityCtx.stroke();
     activityCtx.lineWidth = 2.7; activityCtx.strokeStyle = color; activityCtx.stroke();
     return tip;
   }
 
-  function paintActivity() {
-    lastActivityPaintAt = performance.now();
-    activityCtx.clearRect(0, 0, view.width, view.height);
-    if (!activityEnabled() || !board) return;
+  function paintWorkSample(visual, recent = false) {
     const colors = { pad: '#9bf0d6', via: '#dfb0f4', grid: '#7fd0ed', search: '#7ee5f4', candidate: '#ffc47c', trace: '#a2efd0', check: '#ebdb97' };
-    for (const recent of recentRoutePreviews()) {
-      const fraction = reducedMotion.matches ? 1 : Math.min(1, Math.max(0, (performance.now() - recent.receivedAt) / 900));
-      activityCtx.save(); activityCtx.lineCap = 'round'; activityCtx.lineJoin = 'round';
-      activityCtx.globalAlpha = reducedMotion.matches ? .45 : .18 + .42 * Math.max(0, Math.min(1, (recent.expiresAt - Date.now()) / 12000));
-      activityCtx.setLineDash(recent.kind === 'candidate' ? [9, 3] : [3, 3]);
-      for (const path of recent.paths) if (spatialLayerVisible(path.layer ?? recent.layer)) strokeActivityPath(path, path.length * fraction, colors[recent.kind]);
-      activityCtx.restore();
-    }
-    if (!spatialActivityVisible()) return;
-    const visual = spatialActivity;
     const color = colors[visual.kind];
-    const fraction = reducedMotion.matches || !visual.animated ? 1 : Math.min(1, Math.max(0, (performance.now() - visual.receivedAt) / 120));
+    const fraction = reducedMotion.matches ? 1 : Math.min(1, Math.max(0, (performance.now() - visual.receivedAt) / workAnimationDuration(visual, recent)));
+    const alpha = recent ? (reducedMotion.matches ? .45 : .18 + .42 * Math.max(0, Math.min(1, (visual.expiresAt - Date.now()) / 12000))) : .95;
     activityCtx.save(); activityCtx.lineCap = 'round'; activityCtx.lineJoin = 'round'; activityCtx.strokeStyle = color; activityCtx.fillStyle = color; activityCtx.lineWidth = 2;
     if (visual.bounds && spatialLayerVisible(visual.layer)) {
       const [x0, y0] = worldToScreen(visual.bounds[0], visual.bounds[3]);
       const [x1, y1] = worldToScreen(visual.bounds[2], visual.bounds[1]);
-      activityCtx.globalAlpha = .14; activityCtx.fillRect(x0, y0, x1 - x0, y1 - y0);
-      activityCtx.globalAlpha = .85; activityCtx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+      activityCtx.globalAlpha = alpha * (.12 + (1 - fraction) * .12); activityCtx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      activityCtx.globalAlpha = alpha * .8; activityCtx.strokeRect(x0, y0, x1 - x0, y1 - y0);
     }
-    activityCtx.globalAlpha = .95;
-    if (visual.kind === 'candidate') activityCtx.setLineDash([9, 3]);
+    activityCtx.globalAlpha = alpha;
+    activityCtx.setLineDash(visual.kind === 'candidate' ? [9, 3] : (recent ? [3, 3] : []));
     const tips = [];
     for (const path of visual.paths) {
       if (!spatialLayerVisible(path.layer ?? visual.layer)) continue;
       let tip;
-      if (path.transition && fraction < .5) tip = strokeActivityPath(path.transition.before, path.transition.sharedLength + (path.transition.before.length - path.transition.sharedLength) * (1 - fraction * 2), color);
-      else if (path.transition) tip = strokeActivityPath(path, path.transition.sharedLength + (path.length - path.transition.sharedLength) * Math.max(0, (fraction - .5) * 2), color);
+      if (!recent && path.transition && fraction < .5) tip = strokeActivityPath(path.transition.before, path.transition.sharedLength + (path.transition.before.length - path.transition.sharedLength) * (1 - fraction * 2), color);
+      else if (!recent && path.transition) tip = strokeActivityPath(path, path.transition.sharedLength + (path.length - path.transition.sharedLength) * Math.max(0, (fraction - .5) * 2), color);
       else tip = strokeActivityPath(path, path.length * fraction, color);
-      if (tip && visual.animated) tips.push(tip);
+      if (tip && ['search', 'candidate', 'trace'].includes(visual.kind) && (!recent || fraction < 1)) tips.push(tip);
     }
     activityCtx.setLineDash([]);
     for (const tip of tips) {
-      activityCtx.beginPath(); activityCtx.arc(tip[0], tip[1], 4, 0, Math.PI * 2);
+      activityCtx.beginPath(); activityCtx.arc(tip[0], tip[1], recent ? 3 : 4, 0, Math.PI * 2);
       activityCtx.fillStyle = '#f1ffff'; activityCtx.strokeStyle = '#173944'; activityCtx.lineWidth = 1.5; activityCtx.fill(); activityCtx.stroke();
     }
     activityCtx.fillStyle = color; activityCtx.strokeStyle = color; activityCtx.lineWidth = 2;
     for (const point of visual.points) {
       if (!spatialLayerVisible(point[2] ?? visual.layer)) continue;
       const [x, y] = worldToScreen(point[0], point[1]);
+      activityCtx.globalAlpha = alpha;
       activityCtx.beginPath(); activityCtx.arc(x, y, visual.kind === 'search' ? 2.5 : 7, 0, Math.PI * 2);
-      if (visual.kind === 'search') { activityCtx.globalAlpha = .65; activityCtx.fill(); }
-      else { activityCtx.globalAlpha = .95; activityCtx.stroke(); activityCtx.beginPath(); activityCtx.moveTo(x - 3, y); activityCtx.lineTo(x + 3, y); activityCtx.moveTo(x, y - 3); activityCtx.lineTo(x, y + 3); activityCtx.stroke(); }
+      if (visual.kind === 'search') { activityCtx.globalAlpha = alpha * .7; activityCtx.fill(); }
+      else {
+        activityCtx.stroke(); activityCtx.beginPath(); activityCtx.moveTo(x - 3, y); activityCtx.lineTo(x + 3, y); activityCtx.moveTo(x, y - 3); activityCtx.lineTo(x, y + 3); activityCtx.stroke();
+        if (fraction < 1) {
+          activityCtx.globalAlpha = alpha * (1 - fraction) * .7;
+          activityCtx.beginPath(); activityCtx.arc(x, y, 7 + 9 * fraction, 0, Math.PI * 2); activityCtx.stroke();
+        }
+      }
     }
     activityCtx.restore();
+  }
+
+  function paintActivity() {
+    lastActivityPaintAt = performance.now();
+    activityCtx.clearRect(0, 0, view.width, view.height);
+    if (!activityEnabled() || !board) return;
+    for (const recent of recentWorkPreviews()) paintWorkSample(recent, true);
+    if (spatialActivityVisible()) paintWorkSample(spatialActivity);
   }
 
   function path(points, closed = false) {
