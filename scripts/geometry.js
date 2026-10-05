@@ -278,6 +278,44 @@ function createRamenGeometry(onActivity=null) {
     if(core.polygon)for(const hole of board.holes||[])for(const p of hole.points||hole)if(pointInPolygon(p[0],p[1],core.points))return false;
     return true;
   }
+  // This is a bounded terminal-access exception, not another routing layer.
+  // Geometry establishes the exception; generated/imported trace flags do not.
+  function padEscapeLimit(board,pad,net,viaDefinition) {
+    const shapes=pad?.shapes||[],scale=board.units?.mmPerUnit;
+    if(!shapes.length||!Number.isFinite(scale)||scale<=0||!Number.isFinite(net?.width)||net.width<=0||!Number.isFinite(viaDefinition?.diameter)||viaDefinition.diameter<=0)return 0;
+    const bounds=shapes.map(shapeBounds),minX=Math.min(...bounds.map(b=>b.minX)),minY=Math.min(...bounds.map(b=>b.minY)),maxX=Math.max(...bounds.map(b=>b.maxX)),maxY=Math.max(...bounds.map(b=>b.maxY));
+    const localClearance=Math.max(0,net.routingClearance??net.clearance??board.defaultClearance??0);
+    const limit=Math.hypot(maxX-minX,maxY-minY)+Math.max(net.width*6,viaDefinition.diameter*2,localClearance*2,1/scale);
+    return Number.isFinite(limit)?limit:0;
+  }
+  function isPermittedLayerEscape(board,trace,net=null) {
+    if(!board||!trace)return false;
+    net=net||(board.nets||[]).find(item=>netKey(item.id)===netKey(trace.net));
+    const layerIds=new Set((board.layers||[]).map((layer,i)=>layer.index??i)),selected=net?.useLayers||[...layerIds];
+    if(net?.allowPadEscape!==true||netKey(net.id)===null||netKey(net.id)!==netKey(trace.net)||!layerIds.has(trace.layer)||selected.includes(trace.layer)||!selected.some(layer=>layerIds.has(layer)))return false;
+    if(!Number.isFinite(trace.width)||trace.width<=0||Math.abs(trace.width-net.width)>EPS||!Array.isArray(trace.points)||trace.points.length<2||trace.points.some(p=>!Array.isArray(p)||p.length<2||!Number.isFinite(p[0])||!Number.isFinite(p[1])))return false;
+    let length=0;for(let i=1;i<trace.points.length;i++)length+=distance(trace.points[i-1],trace.points[i]);
+    if(!Number.isFinite(length)||length<=EPS)return false;
+    const endpoints=[trace.points[0],trace.points.at(-1)],key=netKey(net.id);
+    const pads=(board.pads||[]).filter(pad=>netKey(pad.net)===key&&pad.shapes?.length&&new Set(pad.shapes.map(shape=>shape.layer)).size===1&&pad.shapes[0].layer===trace.layer);
+    const vias=(board.vias||[]).filter(via=>netKey(via.net)===key&&Number.isFinite(via.x)&&Number.isFinite(via.y));
+    for(const via of vias) {
+      const def=(board.viaDefs||[]).find(item=>item.name===via.padstack);
+      if(!def||net.viaName&&net.viaName!==def.name||!Number.isInteger(def.fromLayer)||!Number.isInteger(def.toLayer)||def.fromLayer>=def.toLayer||trace.layer<def.fromLayer||trace.layer>def.toLayer||!selected.some(layer=>layerIds.has(layer)&&layer>=def.fromLayer&&layer<=def.toLayer))continue;
+      const expected=[...layerIds].filter(layer=>layer>=def.fromLayer&&layer<=def.toLayer),actual=via.layers||expected,diameter=via.diameter??def.diameter;
+      if(!Number.isFinite(diameter)||diameter<=0||Math.abs(diameter-def.diameter)>EPS||!Array.isArray(actual)||actual.length!==expected.length||new Set(actual).size!==actual.length||expected.some(layer=>!actual.includes(layer)))continue;
+      const viaShape={type:'circle',cx:via.x,cy:via.y,r:diameter/2};
+      for(let end=0;end<2;end++) {
+        if(distance(endpoints[end],[via.x,via.y])>EPS)continue;
+        const from=endpoints[1-end];
+        for(const pad of pads) {
+          if(!pad.shapes.some(shape=>pointInShape(from[0],from[1],shape))||pad.shapes.some(shape=>distanceShapes(viaShape,shape)<=EPS))continue;
+          if(length<=padEscapeLimit(board,pad,net,def)+EPS)return true;
+        }
+      }
+    }
+    return false;
+  }
   function validate(board) {
     const activity=observesActivity?activityContext('checking'):null;
     const {objects,primitives}=copper(board),layers=indexing(board,primitives);
@@ -308,7 +346,7 @@ function createRamenGeometry(onActivity=null) {
     for(const [index,t] of (board.traces||[]).entries()){
       const net=nets.get(netKey(t.net));
       if(net&&t.width+EPS<net.width)widthDeviations.push({index,net:t.net,layer:t.layer,actual:t.width,required:net.width});
-      if(net?.useLayers&&!net.useLayers.includes(t.layer))violation('inactive_layer',`l:t:${index}`,{kind:'trace',index,layer:t.layer,net:t.net});
+      if(net?.useLayers&&!net.useLayers.includes(t.layer)&&!isPermittedLayerEscape(board,t,net))violation('inactive_layer',`l:t:${index}`,{kind:'trace',index,layer:t.layer,net:t.net});
       if(!Number.isFinite(t.width)||t.width<=0||t.points.length<2||t.points.some(p=>p.length<2||!p.every(Number.isFinite)))violation('invalid_geometry',`i:t:${index}`,{kind:'trace',index});
     }
     for(const [index,v] of (board.vias||[]).entries()){
@@ -347,7 +385,7 @@ function createRamenGeometry(onActivity=null) {
   }
   return {EPS,distance,distancePointSegment,pointInPolygon,pointInShape,pointInBoard,pointOnSegment,segmentIntersection,closestPointOnSegment,
     closestSegmentPoints,distanceSegments,closestShapePoints,distanceShapes,distancePointShape,distanceSegmentShape,nearestPointOnShape,
-    shapeBounds,boxesOverlap,spatialIndex,unionFind,copper,connectivity,boundaryEdges,shapeInsideBoard,clearance,validate,stats};
+    shapeBounds,boxesOverlap,spatialIndex,unionFind,copper,connectivity,boundaryEdges,shapeInsideBoard,clearance,padEscapeLimit,isPermittedLayerEscape,validate,stats};
 }
 globalThis.createRamenGeometry=createRamenGeometry;
 if(typeof module!=='undefined'&&module.exports)module.exports={createRamenGeometry};

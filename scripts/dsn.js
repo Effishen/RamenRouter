@@ -28,19 +28,21 @@ function createRamenDSN() {
       const comment=text.slice(start,i).trim();
       if(!comment.startsWith('RamenRouter routing rules'))continue;
       if(rules!==null)fail('Duplicate RamenRouter routing rules metadata.');
-      const prefix='RamenRouter routing rules v1:';
-      if(!comment.startsWith(prefix))fail('Unsupported RamenRouter routing rules metadata version.');
+      const version=comment.startsWith('RamenRouter routing rules v1:')?1:comment.startsWith('RamenRouter routing rules v2:')?2:0;
+      if(!version)fail('Unsupported RamenRouter routing rules metadata version.');
+      const prefix='RamenRouter routing rules v'+version+':';
       try {rules=JSON.parse(comment.slice(prefix.length));}
       catch(_) {fail('Malformed RamenRouter routing rules metadata.');}
-      if(!rules||typeof rules!=='object'||Array.isArray(rules)||Object.keys(rules).length!==1||
-        !Object.prototype.hasOwnProperty.call(rules,'shorterNets')||!Array.isArray(rules.shorterNets)||
-        rules.shorterNets.some(name=>typeof name!=='string')||new Set(rules.shorterNets).size!==rules.shorterNets.length)
-        fail('Invalid RamenRouter routing rules metadata; shorterNets must contain unique net names.');
+      const keys=version===1?['shorterNets']:['shorterNets','padEscapeNets'];
+      if(!rules||typeof rules!=='object'||Array.isArray(rules)||Object.keys(rules).length!==keys.length||
+        keys.some(key=>!Object.prototype.hasOwnProperty.call(rules,key)||!Array.isArray(rules[key])||rules[key].some(name=>typeof name!=='string')||new Set(rules[key]).size!==rules[key].length))
+        fail(version===1?'Invalid RamenRouter routing rules metadata; shorterNets must contain unique net names.':'Invalid RamenRouter routing rules metadata; net lists must contain unique net names.');
     }
     return rules;
   }
   function routingRulesWrite(nets) {
-    const shorterNets=nets.filter(net=>net.preferShort===true).map(net=>net.name);
+    const shorterNets=nets.filter(net=>net.preferShort===true).map(net=>net.name),padEscapeNets=nets.filter(net=>net.allowPadEscape===true).map(net=>net.name);
+    if(padEscapeNets.length)return '; RamenRouter routing rules v2: '+JSON.stringify({shorterNets,padEscapeNets})+'\n';
     return shorterNets.length?'; RamenRouter routing rules v1: '+JSON.stringify({shorterNets})+'\n':'';
   }
   function astRead(text) {
@@ -323,7 +325,7 @@ function createRamenDSN() {
         }
       }
       const names = children(net,'pins').flatMap(p => atoms(p).slice(1));
-      const item = { id: board.nets.length + 1, name: net[1], pins: names, width: defaultWidth, clearance: defaultClearance, className: 'default', clearanceClass: 'default', viaName: viaNames[0] || null, useLayers: everyLayer.slice(), preferShort: false };
+      const item = { id: board.nets.length + 1, name: net[1], pins: names, width: defaultWidth, clearance: defaultClearance, className: 'default', clearanceClass: 'default', viaName: viaNames[0] || null, useLayers: everyLayer.slice(), preferShort: false, allowPadEscape: false };
       board.nets.push(item); netByName.set(item.name,item);
       for (const pin of names) {
         if (netByPin.has(pin) && netByPin.get(pin) !== item.id) fail('Pin ' + pin + ' belongs to multiple nets.');
@@ -334,6 +336,11 @@ function createRamenDSN() {
       const net=netByName.get(name);
       if(!net)fail('Unknown net '+name+' in RamenRouter routing rules metadata.');
       net.preferShort=true;
+    }
+    for(const name of routingRules?.padEscapeNets||[]) {
+      const net=netByName.get(name);
+      if(!net)fail('Unknown net '+name+' in RamenRouter routing rules metadata.');
+      net.allowPadEscape=true;
     }
     const assigned = new Set();
     const classes=children(network,'class'), defaults=classes.filter(c=>c[1]==='default');
@@ -518,11 +525,15 @@ function createRamenDSN() {
       if (!net || !Number.isInteger(change.netId)) throw new Error('Unknown net in routing rule changes.');
       if (seen.has(net.id)) throw new Error('Duplicate routing rule changes for net ' + net.name + '.');
       seen.add(net.id);
-      const hasLayers=Object.prototype.hasOwnProperty.call(change,'layers'),hasShort=Object.prototype.hasOwnProperty.call(change,'preferShort');
-      if(!hasLayers&&!hasShort)throw new Error('Choose a routing rule to change for net '+net.name+'.');
+      const hasLayers=Object.prototype.hasOwnProperty.call(change,'layers'),hasShort=Object.prototype.hasOwnProperty.call(change,'preferShort'),hasEscape=Object.prototype.hasOwnProperty.call(change,'allowPadEscape');
+      if(!hasLayers&&!hasShort&&!hasEscape)throw new Error('Choose a routing rule to change for net '+net.name+'.');
       if(hasShort) {
         if(typeof change.preferShort!=='boolean')throw new Error('The shorter-route preference must be true or false.');
         net.preferShort=change.preferShort;
+      }
+      if(hasEscape) {
+        if(typeof change.allowPadEscape!=='boolean')throw new Error('The pad escape permission must be true or false.');
+        net.allowPadEscape=change.allowPadEscape;
       }
       if(!hasLayers)continue;
       if (!Array.isArray(change.layers) || !change.layers.length) throw new Error('Choose at least one routing layer for net ' + net.name + '.');
@@ -645,7 +656,7 @@ function createRamenDSN() {
       if(node.length>2)network.push(node);
     }
     const sessionName=/\.dsn$/i.test(filename)?filename.replace(/\.dsn$/i,'.ses'):filename+'.ses';
-    const session=['session',sessionName,['base_design',filename],['placement',['resolution',board.units.name,String(resolution)]],['routes',['resolution',board.units.name,String(resolution)],['parser',['host_cad','RamenRouter JavaScript'],['host_version','0.2.16']],library,network]];
+    const session=['session',sessionName,['base_design',filename],['placement',['resolution',board.units.name,String(resolution)]],['routes',['resolution',board.units.name,String(resolution)],['parser',['host_cad','RamenRouter JavaScript'],['host_version','0.2.17']],library,network]];
     return astWrite(session)+'\n';
   }
   return { parse, exportSes, exportDsn, exportSesReport, clearRoutingDsn, setNetRoutingRules, setNetRoutingLayers };

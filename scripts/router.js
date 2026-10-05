@@ -78,9 +78,11 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
     detail('Checking input clearances and connectivity',{stage:'input-check'},'checking',true);await yieldNow();
     const initialStats=stats(original),baseViolation=initialStats.clearanceViolations,baseWidth=initialStats.belowNominalWidthTraceCount,baseTotal=initialStats.totalViolations;
     let originalStats=initialStats;
-    if((options.fanout!==false||options.fanoutOnly)&&fanout&&!stopped()){
-      say('Preparing checked SMD escapes.',{phase:'fanout',stats:initialStats});
-      const prepared=await fanout.fanout(copy(original),options,emit,stopped),candidate=prepared.board||prepared,candidateStats=stats(candidate);
+    const needsLayerAccess=original.pads.some(p=>{const net=rules.get(p.net);return net?.allowPadEscape===true&&new Set(p.shapes.map(s=>s.layer)).size===1&&net.useLayers&&!net.useLayers.includes(p.shapes[0].layer);});
+    if((options.fanout!==false||options.fanoutOnly||needsLayerAccess)&&fanout&&!stopped()){
+      const accessOnly=options.fanout===false&&!options.fanoutOnly;
+      say(accessOnly?'Preparing local pad access to selected main routing layers.':'Preparing checked SMD escapes.',{phase:'fanout',stats:initialStats});
+      const prepared=await fanout.fanout(copy(original),accessOnly?{...options,layerAccessOnly:true}:options,emit,stopped),candidate=prepared.board||prepared,candidateStats=stats(candidate);
       if(candidateStats.totalViolations<=baseTotal&&candidateStats.belowNominalWidthTraceCount<=baseWidth&&candidateStats.unrouted<=initialStats.unrouted){original=candidate;originalStats=candidateStats;for(const line of prepared.log||[])log.push(line);say('Fanout added '+(prepared.addedVias||0)+' vias and '+(prepared.addedTraces||0)+' full-width escapes.',{phase:'fanout',board:copy(original),stats:candidateStats});}
       else say('Fanout did not pass the full geometry check; keeping the imported board.',{phase:'checking'});
     }
@@ -90,6 +92,32 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
     // progress may contain a worse rip-up attempt and is never a checkpoint.
     await checkpoint();
     if(options.fanoutOnly){if(!fanout)throw new Error('The offline fanout module is not loaded.');return{board:best,stats:bestStats,initialStats,log,counters:counterSnapshot(),stopped:stopped()};}
+    // Fanout is now immutable input to the main route search. An isolated
+    // group with no selected-layer copper and no allowed pad-centred via
+    // cannot gain an attachment through rip-up on selected layers. Report it
+    // once and continue with other nets instead of rebuilding the same raster.
+    const inaccessibleNets=new Set(),inaccessibleGroups=new Map();
+    const hasLayerAccess=(group,net)=>{
+      const layers=net?.useLayers||original.layers.map(l=>l.index),def=original.viaDefs.find(v=>v.name===net?.viaName);
+      return group.points.some(p=>layers.includes(p[2]))||group.points.some(p=>original.viaAtSmd&&def&&def.attachAllowed!==false&&p[2]>=def.fromLayer&&p[2]<=def.toLayer&&layers.some(l=>l>=def.fromLayer&&l<=def.toLayer));
+    };
+    const hasRoutableGap=component=>(inaccessibleGroups.has(component.net)?component.groups.filter(group=>hasLayerAccess(group,rules.get(component.net))).length:component.groups.length)>1;
+    for(const component of (nets.some(net=>net.useLayers&&net.useLayers.length<original.layers.length)?connectivity(original).components:[])){
+      if(component.groups.length<2)continue;
+      const net=rules.get(component.net),missing=component.groups.filter(group=>!hasLayerAccess(group,net));
+      if(!missing.length)continue;
+      inaccessibleGroups.set(component.net,missing.length);
+      if(component.groups.length-missing.length<=1)inaccessibleNets.add(component.net);
+      const pads=missing.flatMap(group=>group.pads),label=pads.slice(0,4).join(', ')+(pads.length>4?' and '+(pads.length-4)+' more':'');
+      const action=net?.allowPadEscape?'No legal local escape was found. Choose another main layer, move nearby copper or allow vias in SMD pads.':'Enable short pad escapes, include a pad layer or allow vias in SMD pads.';
+      say('Cannot reach selected main layers for '+net.name+(label?' at '+label:'')+'. '+action+' Skipping repeated attempts for this unchanged attachment.',{phase:'routing',activity:{stage:'layer-access-blocked',netId:net.id,netName:net.name,padIds:pads}});
+    }
+    const routingNets=nets.filter(net=>!inaccessibleNets.has(net.id));
+    if(nets.length&&!routingNets.length){
+      finishCounter('attempt','routing');finishCounter('repair','finishing');finishCounter('refinement','optimizing');
+      say(bestStats.unrouted+' connection(s) remain; the selected layers need accessible pad escapes.',{phase:'checking',board:copy(best),stats:bestStats});
+      return{board:best,stats:bestStats,initialStats,log,counters:counterSnapshot(),stopped:stopped()};
+    }
     const span=Math.max(original.bounds.maxX-original.bounds.minX,original.bounds.maxY-original.bounds.minY);
     const widths=original.nets.map(n=>n.width).filter(w=>w>0);
     const narrowest=widths.length?Math.min(...widths):Math.max(span/900,1e-5);
@@ -306,7 +334,7 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
       order.sort((a,b)=>densityScores.get(b.id)-densityScores.get(a.id));
     }
 
-    async function routeNet(net,softAllowed,keepExisting=false){measurement?.count('netAttempts',1,net.id);detail('Routing '+net.name+' · attempt '+(routeActivity.attempt||1),{stage:'net',netId:net.id,netName:net.name},finishing?'finishing':'routing');let c=await getRaster(net);if(stopped())return{failed:true,ripped:new Set()};let groups=(keepExisting?(connectivity(board).components.find(c=>c.net===net.id)?.groups||[]):(groupsByNet.get(net.id)||[])).filter(g=>g.points&&g.points.length);if(groups.length<=1)return{failed:false,ripped:new Set()};let ordered=groups.map(g=>({group:g,seeds:groupSeeds(g,net,c)}));ordered.sort((a,b)=>b.seeds.size-a.seeds.size);let root=ordered.shift(),targets=new Map(root.seeds),targetGroups=[root.group],remaining=ordered,ripped=new Set(),failed=false;
+    async function routeNet(net,softAllowed,keepExisting=false){measurement?.count('netAttempts',1,net.id);detail('Routing '+net.name+' · attempt '+(routeActivity.attempt||1),{stage:'net',netId:net.id,netName:net.name},finishing?'finishing':'routing');let c=await getRaster(net);if(stopped())return{failed:true,ripped:new Set()};let groups=(keepExisting?(connectivity(board).components.find(c=>c.net===net.id)?.groups||[]):(groupsByNet.get(net.id)||[])).filter(g=>g.points&&g.points.length&&(!inaccessibleGroups.has(net.id)||hasLayerAccess(g,net)));if(groups.length<=1)return{failed:false,ripped:new Set()};let ordered=groups.map(g=>({group:g,seeds:groupSeeds(g,net,c)}));ordered.sort((a,b)=>b.seeds.size-a.seeds.size);let root=ordered.shift(),targets=new Map(root.seeds),targetGroups=[root.group],remaining=ordered,ripped=new Set(),failed=false;
       while(remaining.length&&!stopped()){let targetCoordinates=targets.size?[...targets.keys()].map(xy):targetGroups.flatMap(group=>group.points);remaining.sort((a,b)=>distanceToTree(a.group,targetCoordinates)-distanceToTree(b.group,targetCoordinates));let next=remaining.shift(),found=await search(next.seeds,targets,net,c,false);
         if(!found&&softAllowed){
           // Generated routes can block the attachment bridge before A* starts.
@@ -341,14 +369,14 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
         // Once complete, only try distinct full-board orders. A single routable
         // net cannot benefit from repeatedly replaying the same search.
         for(let variant=0;variant<32;variant++){
-          const candidate=prioritizeShort(shuffled(nets,rng(0x52414D45+pass*7919+variant*104729)));
+          const candidate=prioritizeShort(shuffled(routingNets,rng(0x52414D45+pass*7919+variant*104729)));
           if(!completeOrders.has(candidate.map(n=>n.id).join(','))){alternateOrder=candidate;break;}
         }
         if(!alternateOrder){say('No new selected-net routing order to try; keeping the shortest checked result.',{phase:'routing'});break;}
       }
       counters.attempt.current=pass;counters.attempt.status='running';counters.work=null;reportCounters('routing');
       const previousShortLength=bestStats.preferredTraceLengthMm,wasComplete=bestStats.unrouted===0;
-      const repairMode=pass>1&&pass%2===0&&!(shortNets.size&&wasComplete);board=copy(repairMode?best:original);generation++;let random=rng(0x52414D45+pass*7919),order=shuffled(nets,random);
+      const repairMode=pass>1&&pass%2===0&&!(shortNets.size&&wasComplete);board=copy(repairMode?best:original);generation++;let random=rng(0x52414D45+pass*7919),order=shuffled(routingNets,random);
       if(pass===1)await sortByDensity(order);else order.sort((a,b)=>(failures.has(b.id)?1:0)-(failures.has(a.id)?1:0));
       let queue=(alternateOrder||prioritizeShort(order)).filter(n=>!repairMode||failures.has(n.id)),attempts=new Map(),currentFailures=new Set(),processed=0,maxWork=nets.length*(pass===1?2:3);
       if(shortNets.size&&!repairMode)completeOrders.add(queue.map(n=>n.id).join(','));
@@ -358,12 +386,13 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
         if(connectivity(board).unrouted<bestStats.unrouted){if(detail('Checking improved route · '+net.name,{stage:'candidate-check'},'checking'))await yieldNow();let candidateStats=stats(board,true);if(scoreBetter(candidateStats,bestStats)){best=copy(board);bestStats=candidateStats;await checkpoint(pass);}}
         if(processed%3===0){if(Date.now()-lastPreview>=1200){lastPreview=Date.now();emit({type:'progress',phase:'routing',pass,message:'Pass '+pass+' · '+processed+' net attempts · '+queue.length+' queued · last '+net.name,activity:{...routeActivity,processed,queued:queue.length,stage:'net-complete'},board:copy(board),stats:stats(board,false)});}await yieldNow();}
       }
-      emit({type:'progress',phase:'checking',pass,message:'Checking full clearances and connectivity'});await yieldNow();let measured=stats(board,true);if(scoreBetter(measured,bestStats)){best=copy(board);bestStats=measured;await checkpoint(pass);}failures=new Set(connectivity(best).components.filter(c=>c.groups.length>1).map(c=>c.net));say('Pass '+pass+': '+measured.unrouted+' remaining, '+measured.viaCount+' vias; best '+bestStats.unrouted+' remaining.',{phase:'routing',pass,board:copy(best),stats:bestStats});if(!stopped()){counters.attempt.completed++;reportCounters('routing');}if(bestStats.unrouted===0){
+      emit({type:'progress',phase:'checking',pass,message:'Checking full clearances and connectivity'});await yieldNow();let measured=stats(board,true);if(scoreBetter(measured,bestStats)){best=copy(board);bestStats=measured;await checkpoint(pass);}failures=new Set(connectivity(best).components.filter(hasRoutableGap).map(c=>c.net));say('Pass '+pass+': '+measured.unrouted+' remaining, '+measured.viaCount+' vias; best '+bestStats.unrouted+' remaining.',{phase:'routing',pass,board:copy(best),stats:bestStats});if(!stopped()){counters.attempt.completed++;reportCounters('routing');}if(bestStats.unrouted===0){
         if(!shortNets.size||initialStats.unrouted===0)break;
         completeWithoutImprovement=wasComplete&&bestStats.preferredTraceLengthMm>=previousShortLength-EPS?completeWithoutImprovement+1:0;
         if(completeWithoutImprovement>=3){say('Selected-net lengths did not improve in 3 complete-board attempts; keeping the shortest checked result.',{phase:'routing'});break;}
         if(pass<passes&&!stopped())say('All connections are complete. Trying another routing order for shorter selected nets.',{phase:'routing'});
       }
+      if(inaccessibleGroups.size&&!failures.size)break;
     }
     finishCounter('attempt','routing');
     if(options.optimize!==false&&optimizer&&!stopped()){
@@ -375,7 +404,7 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
     }
     // When only a few connections remain, repair local congestion without
     // discarding whole nets. Every retained result still passes the full checks.
-    if(options.deepSearch!==false&&bestStats.unrouted>0&&bestStats.unrouted<=6&&!stopped()){
+    if(options.deepSearch!==false&&bestStats.unrouted>0&&bestStats.unrouted<=6&&(!inaccessibleGroups.size||failures.size)&&!stopped()){
       const beforeFinishing=bestStats.unrouted,viaKey=v=>JSON.stringify([v.net,v.padstack,v.x,v.y,v.diameter,v.layers]);
       const originalViaKeys=new Set(original.vias.map(viaKey));
       // Refinement can reshape escape stubs and remove unused escape vias.
@@ -389,16 +418,16 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
         // The working seed may contain extra escape vias. Keep it separate from
         // the best exportable result, which must never get worse during repair.
         let repairBest=restored,repairStats=restoredStats;
-        let repairFailures=new Set(connectivity(repairBest).components.filter(c=>c.groups.length>1).map(c=>c.net));
+        let repairFailures=new Set(connectivity(repairBest).components.filter(hasRoutableGap).map(c=>c.net));
         finishing=true;ripHistory.clear();
         const retain=async(measured)=>{
           if(scoreBetter(measured,repairStats)){repairBest=copy(board);repairStats=measured;}
           if(scoreBetter(measured,bestStats)){best=copy(board);bestStats=measured;await checkpoint(counters.attempt.current,'finishing');}
         };
-        for(repairRound=1;repairRound<=18&&!stopped()&&bestStats.unrouted>0;repairRound++){
+        for(repairRound=1;repairRound<=18&&!stopped()&&bestStats.unrouted>0&&(!inaccessibleGroups.size||repairFailures.size);repairRound++){
           counters.repair.current=repairRound;counters.repair.status='running';counters.work=null;reportCounters('finishing');
           board=copy(repairBest);generation++;
-          let random=rng(0x52414D45+repairRound*7919),order=shuffled(nets,random);
+          let random=rng(0x52414D45+repairRound*7919),order=shuffled(routingNets,random);
           if(repairRound===1)await sortByDensity(order);else order.sort((a,b)=>(repairFailures.has(b.id)?1:0)-(repairFailures.has(a.id)?1:0));
           const queue=prioritizeShort(order).filter(n=>repairFailures.has(n.id)),attempts=new Map();
           let processed=0,maxWork=nets.length*(repairRound===1?2:3);
@@ -412,7 +441,7 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
           }
           emit({type:'progress',phase:'checking',pass:counters.attempt.current,message:'Checking the repaired connections'});await yieldNow();
           const measured=stats(board,true);await retain(measured);
-          repairFailures=new Set(connectivity(repairBest).components.filter(c=>c.groups.length>1).map(c=>c.net));
+          repairFailures=new Set(connectivity(repairBest).components.filter(hasRoutableGap).map(c=>c.net));
           say('Finishing repair '+repairRound+': '+measured.unrouted+' remaining; best '+bestStats.unrouted+' remaining.',{phase:'finishing',pass:counters.attempt.current,board:copy(best),stats:bestStats});
           if(!stopped()){counters.repair.completed++;reportCounters('finishing');}
         }

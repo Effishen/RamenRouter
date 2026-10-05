@@ -54,7 +54,7 @@ function createRamenFanout(geometry, yieldTask) {
     }
     const shapes=board.pads.filter(p=>p.net&&new Set(p.shapes.map(s=>s.layer)).size===1&&padCounts.get(p.net)>1).map(p=>({pad:p,shape:p.shapes[0],geometry:axisFor(p.shapes[0]),net:nets.get(p.net)})).filter(p=>{
       const def=p.net&&defs.get(p.net.viaName);
-      return def&&traceLayers(p.net).some(l=>l!==p.shape.layer&&l>=def.fromLayer&&l<=def.toLayer);
+      return def&&traceLayers(p.net).some(l=>l!==p.shape.layer&&l>=def.fromLayer&&l<=def.toLayer)&&(!options.layerAccessOnly||p.net.allowPadEscape===true&&!traceLayers(p.net).includes(p.shape.layer));
     });
     const allPadShapes=board.pads.flatMap(p=>p.shapes.map(s=>({pad:p,shape:s,box:G.shapeBounds(s)})));
     function sameNet(a,b){return a!=null&&a===b;}
@@ -80,7 +80,7 @@ function createRamenFanout(geometry, yieldTask) {
       for(const k of board.keepouts||[]){if(k.layers&&!k.layers.includes(p.layer)||k.kind==='via'&&p.kind!=='via')continue;const distance=G.distanceShapes(p.shape,k.shape);if(distance+EPS<(k.clearance??radius)||distance<=EPS)return false;}
       return true;
     }
-    function legalBundle(bundle,temporary=[]) {const id=++visualCandidateId,netId=bundle.traces[0]?.net??bundle.vias[0]?.net;if(candidatesByNet)candidatesByNet.set(netId,(candidatesByNet.get(netId)||0)+1);spatial('Testing fanout candidate · '+(nets.get(netId)?.name||'pad escape'),{stage:'fanout-candidate',netId,netName:nets.get(netId)?.name,candidateId:id},()=>bundleVisual(bundle,'Actual fanout candidate · being checked'));return bundle.traces.every(t=>traceLayers(nets.get(t.net)).includes(t.layer))&&itemPrimitives(bundle).every(p=>clearPrimitive(p,temporary));}
+    function legalBundle(bundle,temporary=[]) {const id=++visualCandidateId,netId=bundle.traces[0]?.net??bundle.vias[0]?.net;if(candidatesByNet)candidatesByNet.set(netId,(candidatesByNet.get(netId)||0)+1);spatial('Testing fanout candidate · '+(nets.get(netId)?.name||'pad escape'),{stage:'fanout-candidate',netId,netName:nets.get(netId)?.name,candidateId:id},()=>bundleVisual(bundle,'Actual fanout candidate · being checked'));let candidateBoard=null;return bundle.traces.every(t=>traceLayers(nets.get(t.net)).includes(t.layer)||G.isPermittedLayerEscape(candidateBoard||(candidateBoard={...board,vias:board.vias.concat(bundle.vias)}),t,nets.get(t.net)))&&itemPrimitives(bundle).every(p=>clearPrimitive(p,temporary));}
     function bundleFor(entry,end,normal,shoulder) {
       const p=entry.pad,net=entry.net,def=defs.get(net.viaName),layer=entry.shape.layer;
       const points=[[p.x,p.y]];
@@ -88,7 +88,7 @@ function createRamenFanout(geometry, yieldTask) {
       if(dist(points[points.length-1],end)>EPS)points.push(end);
       const trace={net:net.id,layer,width:net.width,points,fixed:false,fanout:true};
       const via={x:end[0],y:end[1],net:net.id,padstack:def.name,diameter:def.diameter,layers:Array.from({length:def.toLayer-def.fromLayer+1},(_,i)=>def.fromLayer+i),fixed:false,fanout:true};
-      if(layer<def.fromLayer||layer>def.toLayer||points.length>1&&!traceLayers(net).includes(layer))return null;
+      if(layer<def.fromLayer||layer>def.toLayer||points.length>1&&!traceLayers(net).includes(layer)&&net.allowPadEscape!==true)return null;
       return {traces:points.length>1?[trace]:[],vias:[via],pads:[p.id]};
     }
     function commit(bundle){
@@ -98,7 +98,7 @@ function createRamenFanout(geometry, yieldTask) {
     }
     // A row is inferred from nearby, parallel elongated pads, never component IDs.
     const buckets=[];
-    for(const entry of shapes){if(!traceLayers(entry.net).includes(entry.shape.layer)||!entry.geometry||entry.geometry.ratio<1.6)continue;
+    for(const entry of shapes){if(!traceLayers(entry.net).includes(entry.shape.layer)&&entry.net.allowPadEscape!==true||!entry.geometry||entry.geometry.ratio<1.6)continue;
       // Compare directions directly: angular rounding splits a 45-degree row
       // across adjacent bins when floating-point error straddles a bin edge.
       let bucket=buckets.find(b=>b.layer===entry.shape.layer&&dot(b.axis,entry.geometry.axis)>Math.cos(Math.PI/90));
@@ -216,6 +216,23 @@ function createRamenFanout(geometry, yieldTask) {
       let found=null;
       if(board.viaAtSmd&&defs.get(net.viaName).attachAllowed!==false){const b=bundleFor(entry,[p.x,p.y],[1,0],0);if(b&&legalBundle(b))found=b;}
       if(padLayerAllowed)for(const multiplier of [2,3,4,6,8,10]){if(found)break;for(const direction of directions){const end=[p.x+direction[0]*net.width*multiplier,p.y+direction[1]*net.width*multiplier],b=bundleFor(entry,end,direction,0);if(b&&legalBundle(b)){found=b;break;}}}
+      if(!padLayerAllowed&&net.allowPadEscape===true&&!found){
+        detail('Finding local access to main routing layers · '+net.name+' · '+p.id,{stage:'layer-access',netId:net.id,netName:net.name,padId:p.id},true);
+        const def=defs.get(net.viaName),limit=G.padEscapeLimit(board,p,net,def),gap=Math.max(net.width*.05,EPS*10);
+        // Only this finite local escape may leave the chosen routing layers.
+        // Rays start beyond the pad's extent plus the entire via radius, so
+        // via-in-pad is not needed. Full geometry checks remain authoritative.
+        const rays=directions.concat([[1,0],[-1,0],[0,1],[0,-1],[Math.SQRT1_2,Math.SQRT1_2],[-Math.SQRT1_2,Math.SQRT1_2],[Math.SQRT1_2,-Math.SQRT1_2],[-Math.SQRT1_2,-Math.SQRT1_2]]);
+        const seen=new Set(),candidates=[];
+        for(const direction of rays){const key=direction.map(v=>v.toFixed(8)).join(',');if(seen.has(key))continue;seen.add(key);
+          const vertices=entry.shape.type==='polygon'?entry.shape.points:[[box.minX,box.minY],[box.minX,box.maxY],[box.maxX,box.minY],[box.maxX,box.maxY]];
+          const extent=Math.max(...vertices.map(v=>(v[0]-p.x)*direction[0]+(v[1]-p.y)*direction[1]));
+          for(const extra of [0,net.width,net.width*2,net.width*4]){const distance=Math.max(0,extent)+def.diameter/2+gap+extra;if(distance<=limit+EPS)candidates.push({direction,distance});}
+        }
+        candidates.sort((a,b)=>a.distance-b.distance);
+        for(const candidate of candidates){if(cancelled())break;const end=[p.x+candidate.direction[0]*candidate.distance,p.y+candidate.direction[1]*candidate.distance],bundle=bundleFor(entry,end,candidate.direction,0);if(bundle&&legalBundle(bundle)){found=bundle;break;}}
+        if(!found&&!cancelled()){const message='No legal local escape found for '+net.name+' at '+p.id+'. Try another main routing layer, move nearby copper or allow vias in SMD pads.';log.push(message);emit({type:'progress',phase:'fanout',message,activity:{stage:'layer-access-blocked',netId:net.id,netName:net.name,padId:p.id}});}
+      }
       if(found)commit(found);
       await pause();
     }
