@@ -142,7 +142,7 @@
     if ($('netLayersDialog').open && (job?.id !== netLayersData?.jobId || active)) { discardRoutingRuleDraft(); $('netLayersDialog').close(); }
     const layerSummary = job?.routingRuleSummary || job?.layerRuleSummary;
     const savedOptions = routingOptionsBeforeDialog || readRoutingOptions();
-    const optionSummary = `${number(savedOptions.maxPasses)} attempts · ${number(savedOptions.timeoutMinutes)} min${savedOptions.preferredDirections ? ' · alternating directions' : ''}`;
+    const optionSummary = `${number(savedOptions.maxPasses)} attempts · ${number(savedOptions.timeoutMinutes)} min${savedOptions.preferredDirections ? ' · alternating directions' : ''}${savedOptions.benchmarkMode ? ' · fixed-work benchmark' : ''}`;
     $('netLayersSummary').textContent = optionSummary + (layerSummary ? ` · ${number(layerSummary.restrictedNets)} layer-limited nets · ${number(layerSummary.shortRouteNets || 0)} prefer shorter routes` : '');
     const layerConflicts = layerSummary?.conflictingTraces || 0;
     $('netLayerConflict').hidden = !layerConflicts || active;
@@ -182,6 +182,7 @@
     updateRemainingRoutes();
     updatePlacementAdvice();
     updateExportAttention();
+    updateRunReportControls();
     updateAttention();
   }
 
@@ -671,7 +672,7 @@
     const hasJob = Boolean(job && job.state !== 'idle');
     const active = isActive();
     if (job?.settings && !['ready', 'inspecting', 'clearing', 'updating_rules'].includes(job.state) && !['clearing', 'updating_rules'].includes(previousJob?.state) && (firstState || job.id !== lastJobId)) {
-      for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad', 'preferredDirections']) if (typeof job.settings[key] === 'boolean') $(key).checked = job.settings[key];
+      for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad', 'preferredDirections', 'benchmarkMode']) if (typeof job.settings[key] === 'boolean') $(key).checked = job.settings[key];
       for (const key of ['maxPasses', 'timeoutMinutes']) if (typeof job.settings[key] === 'number') $(key).value = job.settings[key];
     }
     if (job?.state === 'stopping') stoppingSince ??= Date.now();
@@ -1306,11 +1307,11 @@
   }
 
   function readRoutingOptions() {
-    return { deepSearch: $('deepSearch').checked, viaInPad: $('viaInPad').checked, fanout: $('fanout').checked, fanoutOnly: $('fanoutOnly').checked, optimize: $('optimize').checked, preferredDirections: $('preferredDirections').checked, maxPasses: Number($('maxPasses').value), timeoutMinutes: Number($('timeoutMinutes').value) };
+    return { deepSearch: $('deepSearch').checked, viaInPad: $('viaInPad').checked, fanout: $('fanout').checked, fanoutOnly: $('fanoutOnly').checked, optimize: $('optimize').checked, preferredDirections: $('preferredDirections').checked, benchmarkMode: $('benchmarkMode').checked, maxPasses: Number($('maxPasses').value), timeoutMinutes: Number($('timeoutMinutes').value) };
   }
 
   function writeRoutingOptions(settings) {
-    for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad', 'preferredDirections']) if (typeof settings[key] === 'boolean') $(key).checked = settings[key];
+    for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad', 'preferredDirections', 'benchmarkMode']) if (typeof settings[key] === 'boolean') $(key).checked = settings[key];
     for (const key of ['maxPasses', 'timeoutMinutes']) if (Number.isFinite(settings[key])) $(key).value = settings[key];
   }
 
@@ -1334,14 +1335,14 @@
     }
     acknowledgeAttention();
     busy = true; updateControls();
-    try { saveSettings(); await post('/api/run', getSettings()); }
+    try { saveSettings(); await post('/api/run', { ...getSettings(), animationEnabled: $('showLiveWork').checked }); }
     catch (error) { toast(error.message, true); }
     finally { busy = false; updateControls(); }
   }
   function restoreSettings() {
     try {
       const settings = JSON.parse(localStorage.getItem('ramenrouter.browser.settings.v1') || '{}');
-      for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad', 'preferredDirections']) if (typeof settings[key] === 'boolean') $(key).checked = settings[key];
+      for (const key of ['fanout', 'fanoutOnly', 'optimize', 'deepSearch', 'viaInPad', 'preferredDirections', 'benchmarkMode']) if (typeof settings[key] === 'boolean') $(key).checked = settings[key];
       if (Number.isInteger(settings.maxPasses) && settings.maxPasses >= 1 && settings.maxPasses <= 100) $('maxPasses').value = settings.maxPasses;
       if (Number.isInteger(settings.timeoutMinutes) && settings.timeoutMinutes >= 1 && settings.timeoutMinutes <= 1440) $('timeoutMinutes').value = settings.timeoutMinutes;
     } catch {}
@@ -1629,6 +1630,239 @@
     } catch (error) { toast(error.message, true); }
   }
 
+  // Reports are built only on request, outside the routing/animation hot path.
+  let displayedRunReport = null;
+  let importedRunReport = null;
+  let reportJobId = null;
+  let reportNetNames = new Map();
+  const benchmarkTools = globalThis.RamenBenchmark;
+
+  function reportElement(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function reportDuration(ms) {
+    if (!Number.isFinite(ms)) return '—';
+    if (ms < 1000) return `${number(ms, 0)} ms`;
+    if (ms < 60000) return `${number(ms / 1000, 2)} s`;
+    return `${seconds(ms / 1000)}${ms >= 3600000 ? ' hr' : ' min'}`;
+  }
+
+  function updateRunReportControls() {
+    const job = currentState?.job;
+    const ready = Boolean(job?.runReport && terminalStates.has(job.state) && job.operation === 'run');
+    $('runReportButton').hidden = !ready;
+    $('runReportButton').disabled = !ready || busy;
+    // Preserve an already-open report as a snapshot; replacing the board does
+    // not quietly change the figures underneath a comparison.
+  }
+
+  function renderReportStages(report) {
+    const names = { reading: 'Read board', preparing: 'Prepare grids', searching: 'Search paths', routing: 'Route & repair', fanout: 'Pad escapes', refining: 'Refine routes', checking: 'Check rules', advising: 'Placement advice', exporting: 'Prepare exports', fingerprinting: 'Identify workload', other: 'Other processing' };
+    const fragment = document.createDocumentFragment();
+    for (const stage of report.stages) {
+      if (stage.activeMs <= 0) continue;
+      const row = reportElement('div', undefined, 'report-stage');
+      const label = reportElement('span', names[stage.name] || stage.name);
+      const bar = reportElement('span', undefined, 'report-stage-track');
+      const fill = reportElement('span');
+      fill.style.width = `${Math.min(100, Math.max(0, stage.activeMs / Math.max(1, report.timing.activeMs) * 100))}%`;
+      bar.setAttribute('aria-hidden', 'true'); bar.append(fill);
+      const value = reportElement('strong', reportDuration(stage.activeMs));
+      row.append(label, bar, value); fragment.append(row);
+    }
+    $('reportStages').replaceChildren(fragment);
+    const partial = report.coverage?.partial;
+    $('reportCoverageNote').textContent = partial ? `Partial measurement: worker counters and stage timings were received through ${reportDuration(report.timing.measuredThroughMs)}. Stopping can interrupt work before its next report.` : 'Measured inside the routing worker, including preparation and final checks. Nested search time is not counted twice. Paused time is excluded.';
+  }
+
+  function renderReportProgress(report) {
+    const container = $('reportProgressChart');
+    if (!report.progress.length) { container.replaceChildren(reportElement('p', 'No checked routing snapshots were available for this run.', 'report-note')); return; }
+    const points = report.progress;
+    const width = Math.max(260, Math.min(760, window.innerWidth - (window.innerWidth <= 600 ? 70 : 110)));
+    const height = 230, left = 48, right = 18, top = 18, bottom = 40;
+    const maxTime = Math.max(1, report.timing.activeMs, ...points.map(point => point.activeMs));
+    const maxRemaining = Math.max(1, ...points.map(point => point.unrouted));
+    const x = value => left + value / maxTime * (width - left - right);
+    const y = value => top + (1 - value / maxRemaining) * (height - top - bottom);
+    const svgNode = (tag, attrs = {}, text) => {
+      const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+      for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+    const svg = svgNode('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-labelledby': 'reportChartTitle reportChartDescription' });
+    svg.append(svgNode('title', { id: 'reportChartTitle' }, 'Checked connections remaining over processing time'));
+    svg.append(svgNode('desc', { id: 'reportChartDescription' }, `The first recorded result had ${number(points[0].unrouted)} connections remaining. The last had ${number(points[points.length - 1].unrouted)} after ${reportDuration(points[points.length - 1].activeMs)} of processing.`));
+    for (const level of [0, .5, 1]) {
+      const remaining = Math.round(maxRemaining * level), py = y(remaining);
+      svg.append(svgNode('line', { x1: left, x2: width - right, y1: py, y2: py, class: 'report-chart-grid' }));
+      svg.append(svgNode('text', { x: left - 9, y: py + 5, 'text-anchor': 'end' }, remaining >= 10000 ? remaining.toLocaleString(undefined, { notation: 'compact', maximumFractionDigits: 1 }) : number(remaining)));
+    }
+    svg.append(svgNode('text', { x: left, y: height - 12 }, '0 s'));
+    svg.append(svgNode('text', { x: width - right, y: height - 12, 'text-anchor': 'end' }, reportDuration(maxTime)));
+    let path = `M ${x(points[0].activeMs)} ${y(points[0].unrouted)}`;
+    for (const point of points.slice(1)) path += ` H ${x(point.activeMs)} V ${y(point.unrouted)}`;
+    path += ` H ${x(maxTime)}`;
+    svg.append(svgNode('path', { d: path, class: 'report-chart-line' }));
+    for (const point of [points[0], points[points.length - 1]]) svg.append(svgNode('circle', { cx: x(point.activeMs), cy: y(point.unrouted), r: 4, class: 'report-chart-dot' }));
+    container.replaceChildren(svg);
+  }
+
+  function reportBrowser(report) {
+    const env = report.environment;
+    return env.browser || env.userAgent || 'Browser not recorded';
+  }
+
+  function renderReportDetails(report) {
+    const stats = report.final || {}, counters = report.counters;
+    const searchMs = report.stages.filter(stage => stage.name === 'searching').reduce((sum, stage) => sum + stage.activeMs, 0);
+    const rows = [
+      ['Total trace length', `${number(stats.traceLengthMm, 2)} mm`], ['Vias', number(stats.viaCount)],
+      ['Trace items', number(stats.traceCount)], ['Undersized traces', number(stats.belowNominalWidthTraceCount)],
+      ['Searches attempted', number(counters.searches)], ['Grid positions explored', number(counters.gridPositions)],
+      ['Grid positions per search second', searchMs > 0 ? number(counters.gridPositions / (searchMs / 1000)) : '—'],
+      ['Net attempts', number(counters.netAttempts)], ['Rip-ups', number(counters.ripups)],
+      ['Refinement candidates', number(counters.refinementCandidates)], ['Redundant via checks', number(counters.redundantViaChecks)],
+      ['Fanout candidates', number(counters.fanoutCandidates)], ['Fanout combinations', number(counters.fanoutCombinations)],
+      ['Time paused', reportDuration(report.timing.pausedMs)]
+    ];
+    for (const [key, label] of [['attempt', 'Routing attempts'], ['repair', 'Repair rounds'], ['refinement', 'Refinement rounds']]) {
+      const round = report.rounds?.[key];
+      if (round) rows.push([label, `${number(round.completed)} completed${round.current > round.completed ? ` · ${number(round.current)} started` : ''}`]);
+    }
+    const fragment = document.createDocumentFragment();
+    for (const [label, value] of rows) fragment.append(reportElement('dt', label), reportElement('dd', value));
+    $('reportDetailStats').replaceChildren(fragment);
+    const hardRows = document.createDocumentFragment();
+    for (const net of [...report.hardestNets].sort((a, b) => b.gridPositions - a.gridPositions || b.activeMs - a.activeMs)) {
+      const row = reportElement('tr');
+      const localName = reportNetNames.get(net.netIndex);
+      const name = reportElement('th', localName ? `${localName} · Net ${net.netIndex}` : `Net ${net.netIndex}`); name.scope = 'row'; row.append(name);
+      for (const value of [number(net.searches), number(net.gridPositions), reportDuration(net.activeMs)]) row.append(reportElement('td', value));
+      hardRows.append(row);
+    }
+    if (!report.hardestNets.length) { const row = reportElement('tr'), cell = reportElement('td', 'No per-net search work recorded.'); cell.colSpan = 4; row.append(cell); hardRows.append(row); }
+    $('reportHardest').replaceChildren(hardRows);
+    $('reportEnvironment').textContent = `RamenRouter ${report.appVersion} · ${report.protocol === 'fixed-work-v1' ? 'Fixed-work benchmark' : 'Normal routing'} · ${reportBrowser(report)} · ${report.environment.workerCount} routing worker · Live work ${report.environment.animationEnabled ? 'on' : 'off'}${report.environment.animationChanged ? ' (changed during run)' : ''}. Board fingerprint: ${report.boardFingerprint ? report.boardFingerprint.slice(0, 16) + '…' : 'not available'}`;
+  }
+
+  function reportWithLabel() {
+    if (!displayedRunReport) return null;
+    return benchmarkTools.validateReport({ ...displayedRunReport, environment: { ...displayedRunReport.environment, deviceLabel: $('reportDeviceLabel').value.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 80) } });
+  }
+
+  function comparisonLabel(report, fallback) { return report.environment.deviceLabel || fallback; }
+
+  function renderBenchmarkComparison() {
+    $('benchmarkCompareSection').hidden = !importedRunReport || !displayedRunReport;
+    if (!importedRunReport || !displayedRunReport) return;
+    const current = reportWithLabel(), other = importedRunReport;
+    const comparison = benchmarkTools.compareReports(current, other);
+    const aLabel = comparisonLabel(current, 'This run'), bLabel = comparisonLabel(other, 'Imported run');
+    const status = $('benchmarkCompareStatus');
+    status.classList.toggle('comparable', comparison.comparable);
+    if (comparison.comparable) {
+      const ratio = current.timing.activeMs / other.timing.activeMs;
+      status.textContent = ratio >= 1 ? `Matching completed workload. ${bLabel} was ${number(current.timing.activeMs / other.timing.activeMs, 2)}× as fast as ${aLabel}.` : `Matching completed workload. ${aLabel} was ${number(other.timing.activeMs / current.timing.activeMs, 2)}× as fast as ${bLabel}.`;
+      if (Math.abs(ratio - 1) < .005) status.textContent = 'Matching completed workload. Processing times were approximately equal.';
+    } else status.textContent = `Side-by-side results only; no speed ranking. ${comparison.reasons.join(' ')}`;
+    const table = $('benchmarkCompareTable'), head = reportElement('thead'), headRow = reportElement('tr');
+    for (const label of ['Measurement', aLabel, bLabel]) { const cell = reportElement('th', label); cell.scope = 'col'; headRow.append(cell); }
+    head.append(headRow); const body = reportElement('tbody');
+    const outcome = report => report.complete ? 'Complete & checked' : report.status === 'stopped' ? 'Stopped' : report.status === 'error' ? 'Error' : 'Incomplete';
+    const rows = [
+      ['Result', outcome(current), outcome(other)],
+      ['Processing time', reportDuration(current.timing.activeMs), reportDuration(other.timing.activeMs)],
+      ['First complete, checked route', reportDuration(current.timing.firstCompleteMs), reportDuration(other.timing.firstCompleteMs)],
+      ['Connections remaining', number(current.final?.unrouted), number(other.final?.unrouted)],
+      ['Rule issues', number(current.final?.totalViolations), number(other.final?.totalViolations)],
+      ['Undersized traces', number(current.final?.belowNominalWidthTraceCount), number(other.final?.belowNominalWidthTraceCount)],
+      ['Trace length', `${number(current.final?.traceLengthMm, 2)} mm`, `${number(other.final?.traceLengthMm, 2)} mm`],
+      ['Vias', number(current.final?.viaCount), number(other.final?.viaCount)],
+      ['Grid positions', number(current.counters.gridPositions), number(other.counters.gridPositions)],
+      ['Searches', number(current.counters.searches), number(other.counters.searches)],
+      ['Mode', current.protocol === 'fixed-work-v1' ? 'Fixed work' : 'Normal routing', other.protocol === 'fixed-work-v1' ? 'Fixed work' : 'Normal routing'],
+      ['RamenRouter', current.appVersion, other.appVersion],
+      ['Live work', `${current.environment.animationEnabled ? 'On' : 'Off'}${current.environment.animationChanged ? ' · changed during run' : ''}`, `${other.environment.animationEnabled ? 'On' : 'Off'}${other.environment.animationChanged ? ' · changed during run' : ''}`],
+      ['Browser', reportBrowser(current), reportBrowser(other)]
+    ];
+    for (const [label, a, b] of rows) { const row = reportElement('tr'), cell = reportElement('th', label); cell.scope = 'row'; row.append(cell, reportElement('td', a), reportElement('td', b)); body.append(row); }
+    table.replaceChildren(head, body);
+  }
+
+  async function openRunReport() {
+    const job = currentState?.job;
+    if (!job?.runReport || !terminalStates.has(job.state) || !benchmarkTools) return;
+    try {
+      displayedRunReport = benchmarkTools.validateReport(job.runReport);
+      const report = displayedRunReport;
+      reportNetNames = new Map();
+      // The rules API preserves board.nets order, the same order used for
+      // report netIndex. Names are kept in this view only, never in the report.
+      try {
+        const rules = await api('/api/routing-rules');
+        if (rules.jobId === job.id && currentState?.job?.id === job.id) reportNetNames = new Map(rules.nets.map((net, index) => [index + 1, String(net.name)]));
+      } catch {}
+      if (currentState?.job?.id !== job.id || isActive()) return;
+      $('reportActiveTime').textContent = reportDuration(report.timing.activeMs);
+      $('reportFirstComplete').textContent = report.timing.firstCompleteMs === null ? 'Not reached' : reportDuration(report.timing.firstCompleteMs);
+      $('reportRemaining').textContent = number(report.final?.unrouted);
+      $('reportRuleIssues').textContent = number(report.final?.totalViolations);
+      $('reportRuleNote').textContent = report.final?.drcChecked ? 'Imported clearance and placement checks' : 'Final rule checks were not completed';
+      $('reportFirstCompleteNote').textContent = report.timing.firstCompleteMs === null ? 'No fully connected result passed all imported checks' : !report.complete ? 'A complete checked candidate was reached; the retained result differs' : 'All connections and imported checks passed';
+      $('reportOutcome').textContent = `${report.status === 'stopped' ? 'Stopped run' : report.status === 'error' ? 'Interrupted by an error' : report.complete ? 'Completed and checked' : 'Finished with connections or rule issues remaining'} · ${report.protocol === 'fixed-work-v1' ? 'Fixed-work benchmark' : 'Normal routing'}${report.coverage?.partial ? ' · partial measurements' : ''}`;
+      $('reportOutcome').classList.toggle('complete', report.complete);
+      if (reportJobId !== job.id) {
+        reportJobId = job.id;
+        $('reportDeviceLabel').value = report.environment.deviceLabel || '';
+        try { $('reportDeviceLabel').value ||= (localStorage.getItem('ramenrouter.benchmark.device.v1') || '').replace(/[\x00-\x1f\x7f]/g, '').slice(0, 80); } catch {}
+        $('reportDetails').open = false;
+      }
+      $('benchmarkImportError').hidden = true;
+      renderReportStages(report); renderReportProgress(report); renderReportDetails(report); renderBenchmarkComparison();
+      $('runReportDialog').showModal();
+    } catch (error) { toast(`Run report unavailable: ${error.message}`, true); }
+  }
+
+  function exportRunReport() {
+    try {
+      const report = reportWithLabel(); if (!report) return;
+      const blob = new Blob([JSON.stringify(report, null, 2) + '\n'], { type: 'application/json' });
+      const url = URL.createObjectURL(blob), link = reportElement('a');
+      link.href = url; link.download = `RamenRouter-benchmark-${report.appVersion}-${report.boardFingerprint ? report.boardFingerprint.slice(0, 12) : 'partial'}.json`;
+      document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast('Benchmark exported. Board geometry and net names are not included.');
+    } catch (error) { $('benchmarkImportError').textContent = error.message; $('benchmarkImportError').hidden = false; }
+  }
+
+  async function importRunReport(file) {
+    if (!file || !displayedRunReport) return;
+    $('benchmarkImportError').hidden = true;
+    try {
+      if (file.size > 256 * 1024) throw new Error('Choose a benchmark JSON file smaller than 256 KiB.');
+      const report = benchmarkTools.validateReport(await file.text());
+      importedRunReport = report; renderBenchmarkComparison();
+      $('benchmarkCompareSection').scrollIntoView({ block: 'nearest' });
+    } catch (error) { $('benchmarkImportError').textContent = `Could not compare this file: ${error.message}`; $('benchmarkImportError').hidden = false; }
+    finally { $('benchmarkFileInput').value = ''; }
+  }
+
+  $('runReportButton').addEventListener('click', openRunReport);
+  $('closeRunReport').addEventListener('click', () => $('runReportDialog').close());
+  $('closeRunReportBottom').addEventListener('click', () => $('runReportDialog').close());
+  $('exportBenchmark').addEventListener('click', exportRunReport);
+  $('compareBenchmarkButton').addEventListener('click', () => $('benchmarkFileInput').click());
+  $('benchmarkFileInput').addEventListener('change', event => void importRunReport(event.target.files[0]));
+  $('clearBenchmarkComparison').addEventListener('click', () => { importedRunReport = null; renderBenchmarkComparison(); });
+  $('reportDeviceLabel').addEventListener('input', () => {
+    try { localStorage.setItem('ramenrouter.benchmark.device.v1', $('reportDeviceLabel').value.trim()); } catch {}
+    renderBenchmarkComparison();
+  });
   $('dropzone').addEventListener('click', () => { acknowledgeAttention(); $('fileInput').click(); });
   $('replaceButton').addEventListener('click', () => $('fileInput').click());
   $('clearRoutingButton').addEventListener('click', openClearRouting);
@@ -1722,7 +1956,10 @@
   $('zoomOut').addEventListener('click', () => zoomBy(.8));
   $('showPads').addEventListener('change', draw);
   $('showAirwires').addEventListener('change', draw);
-  $('showLiveWork').addEventListener('change', syncActivityVisual);
+  $('showLiveWork').addEventListener('change', () => {
+    nativeEngine?.setBenchmarkEnvironment?.({ animationEnabled: $('showLiveWork').checked });
+    syncActivityVisual();
+  });
   reducedMotion.addEventListener('change', syncActivityVisual);
   document.addEventListener('visibilitychange', () => { syncActivityVisual(); updateRunProgress(); });
   window.addEventListener('pagehide', () => { stopActivityFrames(); stopProgressClock(); });
@@ -1739,7 +1976,7 @@
   canvas.addEventListener('pointerleave', () => { $('cursorPosition').textContent = 'Drag to pan · scroll to zoom'; });
   canvas.addEventListener('dblclick', fitBoard);
   document.addEventListener('keydown', event => {
-    if (event.target.matches('input,textarea,select') || $('aboutDialog').open || $('clearRoutingDialog').open || $('netLayersDialog').open || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (event.target.matches('input,textarea,select') || $('aboutDialog').open || $('clearRoutingDialog').open || $('netLayersDialog').open || $('runReportDialog').open || event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.key.toLowerCase() === 'f') { event.preventDefault(); fitBoard(); }
   });
   if (typeof nativeEngine?.subscribeActivity === 'function') nativeEngine.subscribeActivity(event => {

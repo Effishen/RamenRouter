@@ -508,3 +508,61 @@ dialog p{font-size:16px;line-height:1.65}
 .round-work-detail{grid-column:1/-1;margin:0;padding:6px 2px 0;font-size:13px;line-height:1.5;color:#b8d7cd;overflow-wrap:anywhere}
 .connection-activity-label[data-kind="search"]{border-color:#5c9aa7;color:#bcebf4;background:#12282feb}
 @media(max-width:1050px) and (min-width:901px){.run-progress-card{padding:9px}.run-progress-card>strong{font-size:22px}.run-round-card>strong{font-size:19px}}
+
+/* Post-run measurements stay still and out of the live routing hot path. */
+.run-report-button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:44px;margin-top:16px;padding:10px 13px;border:1px solid #527478;border-radius:6px;background:#20343a;color:#d3e7e6;font-size:16px;text-align:left}
+.run-report-button span{font-size:22px;color:#8fd5c0}
+.run-report-dialog{width:960px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);padding:25px 30px;overflow:auto;scrollbar-color:#4c686d #13232b;scrollbar-width:thin}
+.run-report-dialog h2{font-size:30px;margin:16px 0 8px}
+.run-report-dialog h3{font-size:19px;line-height:1.4;font-weight:550;color:#d5e8e3;margin:0 0 16px}
+.run-report-dialog p{font-size:15px;line-height:1.6;margin:10px 0}
+.run-report-dialog .report-note{font-size:14px;color:#a3bdc1;line-height:1.65}
+.report-outcome{padding:10px 13px;border:1px solid #776342;background:#30291f;color:#e7cb9f;border-radius:6px}
+.report-outcome.complete{border-color:#4f7b68;background:#1d352a;color:#b2e1c6}
+.report-headlines{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:20px 0 24px}
+.report-headlines>div{min-width:0;padding:17px 18px;border:1px solid #3c5d61;border-radius:7px;background:#182e31}
+.report-headlines span{display:block;font-size:15px;color:#c3d8d6;line-height:1.5}
+.report-headlines strong{display:block;margin:9px 0;font:30px/1.25 var(--mono);color:#e0f6ed;overflow-wrap:anywhere}
+.report-headlines small{display:block;font-size:13px;color:#a6c2bc;line-height:1.5}
+.report-section{border-top:1px solid #375359;padding:22px 0 5px;margin-top:22px}
+.report-stages{display:flex;flex-direction:column;gap:12px}
+.report-stage{display:grid;grid-template-columns:160px minmax(50px,1fr) 105px;align-items:center;gap:13px;font-size:14px;line-height:1.4}
+.report-stage>span:first-child{color:#bfd4d4}
+.report-stage>strong{font:14px/1.5 var(--mono);color:#d5e9e0;text-align:right}
+.report-stage-track{display:block;overflow:hidden;height:12px;border-radius:3px;background:#102127}
+.report-stage-track>span{display:block;min-width:2px;height:100%;background:#75c8ac;border-radius:3px}
+.report-progress-chart{border:1px solid #36515b;border-radius:7px;background:#112229;padding:12px 8px 2px}
+.report-progress-chart svg{display:block;width:100%;height:auto;min-height:165px;overflow:visible}
+.report-progress-chart text{font:14px var(--sans);fill:#b3ccce}
+.report-chart-grid{stroke:#38535c;stroke-width:1}
+.report-chart-line{fill:none;stroke:#83dfba;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.report-chart-dot{fill:#b8f2d7}
+.report-details{border:1px solid #3c575e;border-radius:7px;padding:16px;margin-top:24px;background:#13262c}
+.report-details>summary{font-size:16px;color:#c4e1d8;cursor:pointer;line-height:1.5}
+.report-details h3{margin-top:22px;margin-bottom:6px}
+.report-detail-stats{display:grid;grid-template-columns:1fr auto;gap:11px 18px;padding:18px 0 0;margin:0;font-size:15px;line-height:1.45}
+.report-detail-stats dt{color:#a9c5c6}
+.report-detail-stats dd{margin:0;text-align:right;color:#d5e9e0;font-family:var(--mono)}
+.report-table-scroll{max-width:100%;overflow:auto;border:1px solid #39535e;border-radius:6px;margin-top:14px}
+.report-table{border-collapse:collapse;width:100%;min-width:480px;text-align:left;font-size:14px;line-height:1.5}
+.report-table th,.report-table td{padding:11px 13px;border-bottom:1px solid #304a52;vertical-align:top;overflow-wrap:anywhere;max-width:320px}
+.report-table th{font-weight:550;color:#c5dcda}
+.report-table thead th{background:#243c42;color:#d5ebe3}
+.report-table tr:last-child>*{border-bottom:0}
+.report-table td{color:#b7cdd1}
+.report-share>label{display:block;font-size:15px;line-height:1.5;color:#c5dcd7}
+.report-share input[type=text]{display:block;width:min(100%,420px);margin:7px 0 13px;padding:10px 12px;min-height:44px;border:1px solid #4b6b71;border-radius:5px;background:#0f2028;color:#e0efea;font:16px var(--sans)}
+.report-share input::placeholder{color:#96afb7}
+.report-actions,.report-footer,.report-compare-heading{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.report-actions{margin-top:17px}
+.report-actions button,.report-footer button,.report-compare-heading button{min-height:44px;padding:10px 14px;border:1px solid #55776f;border-radius:6px;background:#244039;color:#d5e9e0;font-size:15px;line-height:1.45}
+.report-actions button:first-child{background:#325545;border-color:#74ab91;color:#e2f5e9}
+.report-footer{justify-content:flex-end;border-top:1px solid #375359;padding-top:20px;margin-top:22px}
+.report-compare-heading{justify-content:space-between}
+.report-compare-heading h3{margin:0}
+.report-comparison-status{padding:12px 14px;border-left:3px solid #d1ad75;background:#302c23;color:#edcf9c;overflow-wrap:anywhere}
+.report-comparison-status.comparable{border-color:#80d0ad;background:#1c352d;color:#c1ebd5}
+.run-report-dialog .report-error{color:#ffc0b3;padding:11px;border:1px solid #885f51;border-radius:5px;background:#362722}
+#reportEnvironment{overflow-wrap:anywhere}
+.run-report-dialog button:focus-visible,.run-report-dialog input:focus-visible,.run-report-dialog summary:focus-visible{outline:2px solid #a4e6cb;outline-offset:3px}
+@media(max-width:600px){.run-report-dialog{max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);padding:18px}.run-report-dialog h2{font-size:27px}.report-headlines{gap:9px}.report-headlines>div{padding:12px}.report-headlines span{font-size:14px}.report-headlines strong{font-size:23px}.report-headlines small{font-size:12px}.report-stage{grid-template-columns:minmax(95px,1fr) minmax(30px,1fr) 75px;gap:8px;font-size:13px}.report-stage>strong{font-size:12px}.report-details{padding:12px}.report-detail-stats{font-size:14px;gap:10px}.report-actions>button{flex:1}.report-table{min-width:460px}.report-progress-chart{padding:10px 3px 0}.report-progress-chart svg{min-height:160px}.report-progress-chart text{font-size:14px}.report-compare-heading{align-items:flex-start;flex-direction:column}}

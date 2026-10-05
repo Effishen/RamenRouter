@@ -15,6 +15,7 @@
   <script src="scripts/fanout.js" defer></script>
   <script src="scripts/router.js" defer></script>
   <script src="scripts/advisor.js" defer></script>
+  <script src="scripts/benchmark.js" defer></script>
   <script src="scripts/native-api.js" defer></script>
   <script src="scripts/app.js" defer></script>
 </head>
@@ -25,7 +26,7 @@
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M5 20h30c-1 10-7 15-15 15S6 30 5 20Zm6 15h18M10 7v5h8v8m9-16v8h-4v8M4 15h13M25 15h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="5" r="2" fill="currentColor"/><circle cx="27" cy="3" r="2" fill="currentColor"/></svg>
       <span>Ramen<span class="brand-light">Router</span><span class="brand-caption">PCB ROUTING WORKBENCH</span></span>
     </div>
-    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.15</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
+    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.16</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
     <div class="connection" id="connection"><span class="status-dot"></span><span id="connectionText">Starting browser engine</span></div>
     <button class="icon-button help-button" id="helpButton" title="About this workbench" aria-label="About this workbench">?</button>
   </header>
@@ -137,12 +138,31 @@
       <p class="export-ready-message" id="exportReadyMessage" role="status" aria-live="polite" hidden>All connections routed. Your routing session is ready to export.</p>
       <button id="downloadSes" class="export-button" disabled><span class="export-file-type">SES</span><span><strong>Routing session</strong><small>Import into your PCB editor</small></span><span class="download-arrow" aria-hidden="true">↓</span></button>
       <div class="secondary-downloads"><button id="downloadDsn" class="text-button" disabled>Routed DSN <span aria-hidden="true">↓</span></button><button id="downloadChecks" class="text-button" disabled>Check report <span aria-hidden="true">↓</span></button><button id="downloadLog" class="text-button" disabled>Engine log <span aria-hidden="true">↓</span></button></div>
+      <button id="runReportButton" class="run-report-button" type="button" aria-haspopup="dialog" hidden>Run report <span aria-hidden="true">↗</span></button>
       <p class="export-note">Check clearances, connectivity and design rules in your PCB editor before manufacturing.</p>
-      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.15</span><span>Independent browser engine · GPL-3.0</span></div>
+      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.16</span><span>Independent browser engine · GPL-3.0</span></div>
       </div>
     </aside>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="runReportDialog" class="run-report-dialog" aria-labelledby="runReportTitle" aria-describedby="runReportDescription">
+    <div class="dialog-header"><span class="section-kicker">THE WORK BEHIND THE ROUTES</span><button id="closeRunReport" class="icon-button" type="button" aria-label="Close run report">×</button></div>
+    <h2 id="runReportTitle">Run report</h2>
+    <p id="runReportDescription">See where the time went, how much work the engine did, and the quality of the result.</p>
+    <p id="reportOutcome" class="report-outcome"></p>
+    <div class="report-headlines">
+      <div><span>Processing time</span><strong id="reportActiveTime">—</strong><small>Measured in the worker; pauses excluded</small></div>
+      <div><span>First complete, checked route</span><strong id="reportFirstComplete">—</strong><small id="reportFirstCompleteNote">All connections and imported checks passed</small></div>
+      <div><span>Connections remaining</span><strong id="reportRemaining">—</strong><small>In the retained checked result</small></div>
+      <div><span>Rule issues</span><strong id="reportRuleIssues">—</strong><small id="reportRuleNote">Imported rules checked by RamenRouter</small></div>
+    </div>
+    <section class="report-section" aria-labelledby="reportStageTitle"><h3 id="reportStageTitle">Where the time went</h3><div id="reportStages" class="report-stages"></div><p id="reportCoverageNote" class="report-note"></p></section>
+    <section class="report-section" aria-labelledby="reportProgressTitle"><h3 id="reportProgressTitle">Connections remaining over time</h3><div id="reportProgressChart" class="report-progress-chart"></div><p id="reportProgressNote" class="report-note">Checked results during the run; the final point shows the retained result when available. Many paths may be tested between these points.</p></section>
+    <details id="reportDetails" class="report-details"><summary>Search effort &amp; result details</summary><dl id="reportDetailStats" class="report-detail-stats"></dl><h3>Hardest nets</h3><p class="report-note">Ranked by grid positions explored. Names help locate nets on this board; only anonymous net numbers are included in exported benchmarks.</p><div class="report-table-scroll"><table class="report-table"><caption class="visually-hidden">Search effort for the hardest nets</caption><thead><tr><th scope="col">Net</th><th scope="col">Searches</th><th scope="col">Grid positions</th><th scope="col">Search time</th></tr></thead><tbody id="reportHardest"></tbody></table></div><p id="reportEnvironment" class="report-note"></p></details>
+    <section class="report-section report-share" aria-labelledby="reportShareTitle"><h3 id="reportShareTitle">Compare your computers</h3><label for="reportDeviceLabel">Name this computer <input id="reportDeviceLabel" type="text" maxlength="80" placeholder="e.g. Desktop or travel laptop" autocomplete="off"></label><p class="report-note">Exports include timings, counts, settings, browser details and board fingerprints. They do not include board geometry, file names or net names. The computer name is your own label.</p><div class="report-actions"><button id="exportBenchmark" type="button">Export benchmark</button><button id="compareBenchmarkButton" type="button">Compare benchmark…</button><input id="benchmarkFileInput" type="file" accept=".json,application/json" hidden></div><p id="benchmarkImportError" class="report-error" role="alert" hidden></p></section>
+    <section id="benchmarkCompareSection" class="report-section" aria-labelledby="benchmarkCompareTitle" hidden><div class="report-compare-heading"><h3 id="benchmarkCompareTitle">Benchmark comparison</h3><button id="clearBenchmarkComparison" type="button">Clear comparison</button></div><p id="benchmarkCompareStatus" class="report-comparison-status" role="status"></p><div class="report-table-scroll"><table id="benchmarkCompareTable" class="report-table"></table></div><p class="report-note">This compares RamenRouter in these browsers, primarily on one routing worker. Power settings, other applications and browser versions can affect the times. Repeat runs for a more reliable comparison.</p></section>
+    <div class="report-footer"><button id="closeRunReportBottom" type="button">Back to the board</button></div>
+  </dialog>
   <dialog id="netLayersDialog" class="net-layers-dialog" aria-labelledby="netLayersTitle" aria-describedby="netLayersDescription netLayersApplyNote">
     <div class="dialog-header"><span class="section-kicker">ROUTING RULES</span><button id="closeNetLayers" class="icon-button" type="button" aria-label="Cancel routing rule changes">×</button></div>
     <h2 id="netLayersTitle">Routing rules</h2>
@@ -158,6 +178,7 @@
         <div class="setting-block optimize-setting"><label class="switch-row" for="optimize"><span><strong>Optimize after routing</strong></span><span class="switch"><input type="checkbox" id="optimize" name="optimize" checked><span class="switch-track"></span></span></label><p>Refine completed routes and reduce vias.</p></div>
         <div class="setting-block deep-search-setting"><label class="switch-row" for="deepSearch"><span><strong>Smart search</strong></span><span class="switch"><input type="checkbox" id="deepSearch" name="deepSearch" checked><span class="switch-track"></span></span></label><p>Retry difficult nets and untangle the last few connections. Keep the best checked result.</p></div>
         <div class="setting-block direction-setting"><label class="switch-row" for="preferredDirections"><span><strong>Prefer alternating layer directions</strong></span><span class="switch"><input type="checkbox" id="preferredDirections" name="preferredDirections"><span class="switch-track"></span></span></label><p>Favor vertical routes on one layer and horizontal routes on the next. Routes may bend or cross directions when needed; this is a preference, not a restriction.</p><p id="directionLayerPreview" class="direction-layer-preview"></p></div>
+        <div class="setting-block benchmark-setting"><label class="switch-row" for="benchmarkMode"><span><strong>Fixed-work benchmark</strong></span><span class="switch"><input type="checkbox" id="benchmarkMode" name="benchmarkMode"><span class="switch-track"></span></span></label><p>Use fixed search-work limits for fairer comparisons between computers. Use the same board and routing rules on both. The time limit still pauses the run; extend it until the job finishes.</p></div>
         <details class="advanced-rules"><summary>Advanced rules <span>1 OPTION</span></summary>
           <div class="setting-block via-in-pad-setting"><label class="switch-row" for="viaInPad"><span><strong>Override: allow vias in SMD pads</strong></span><span class="switch"><input type="checkbox" id="viaInPad" name="viaInPad"><span class="switch-track"></span></span></label><p>Changes the imported via-placement rule. Check fabrication suitability. Off preserves the input rule.</p></div>
         </details>

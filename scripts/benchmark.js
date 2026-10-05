@@ -1,0 +1,82 @@
+/* RamenRouter run measurements. GPL-3.0-or-later. */
+'use strict';
+function createRamenBenchmark() {
+  const schema='ramenrouter-run-report',version=1;
+  const stages=['other','fingerprinting','reading','preparing','searching','routing','fanout','refining','checking','advising','exporting'];
+  const countKeys=['searches','gridPositions','netAttempts','ripups','refinementCandidates','redundantViaChecks','fanoutCandidates','fanoutCombinations','refinementRounds'];
+  const boolSettings=['fanout','fanoutOnly','optimize','deepSearch','viaInPad','preferredDirections','benchmarkMode','neckdown'];
+  const statKeys=['unrouted','totalViolations','belowNominalWidthTraceCount','traceLengthMm','viaCount','traceCount','netCount','componentCount','layerCount'];
+  const finite=(v,max=Number.MAX_SAFE_INTEGER)=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=max;
+  const plain=v=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&(Object.getPrototypeOf(v)===Object.prototype||Object.getPrototypeOf(v)===null);
+  const str=(v,max)=>typeof v==='string'&&v.length<=max&&!/[\x00-\x1f\x7f]/.test(v);
+  function cleanSettings(value={}) {
+    const result={};
+    for(const key of boolSettings)if(typeof value[key]==='boolean')result[key]=value[key];
+    for(const key of ['maxPasses','timeoutMinutes'])if(finite(value[key],1440)&&Number.isInteger(value[key]))result[key]=value[key];
+    for(const key of ['gridStep','viaCost'])if(finite(value[key])&&value[key]>0)result[key]=value[key];
+    if(str(value.quality,32))result.quality=value.quality;
+    return result;
+  }
+  function cleanStats(value) {
+    if(!value)return null;
+    const result={};for(const key of statKeys)if(finite(value[key]))result[key]=value[key];
+    result.drcChecked=value.drcChecked===true;result.widthRulesChecked=value.widthRulesChecked===true;
+    return result;
+  }
+  function completeStats(value){return !!value&&value.drcChecked===true&&value.widthRulesChecked===true&&value.unrouted===0&&value.totalViolations===0&&value.belowNominalWidthTraceCount===0;}
+  // SHA-256 fallback keeps file:// reports usable without secure-context APIs.
+  function sha256Fallback(bytes) {
+    const K=[1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298];
+    const h=new Uint32Array([1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225]),w=new Uint32Array(64),block=new Uint8Array(64);
+    const length=bytes.length,total=Math.ceil((length+9)/64)*64,rotate=(x,n)=>(x>>>n)|(x<<(32-n));
+    for(let offset=0;offset<total;offset+=64){
+      block.fill(0);block.set(bytes.subarray(offset,Math.min(offset+64,length)));
+      if(offset<=length&&length<offset+64)block[length-offset]=128;
+      if(offset===total-64){const bits=length*8,view=new DataView(block.buffer);view.setUint32(56,Math.floor(bits/4294967296));view.setUint32(60,bits>>>0);}
+      for(let i=0;i<16;i++)w[i]=((block[i*4]<<24)|(block[i*4+1]<<16)|(block[i*4+2]<<8)|block[i*4+3])>>>0;
+      for(let i=16;i<64;i++){const a=w[i-15],b=w[i-2];w[i]=(w[i-16]+(rotate(a,7)^rotate(a,18)^(a>>>3))+w[i-7]+(rotate(b,17)^rotate(b,19)^(b>>>10)))>>>0;}
+      let [a,b,c,d,e,f,g,j]=h;
+      for(let i=0;i<64;i++){const t1=(j+(rotate(e,6)^rotate(e,11)^rotate(e,25))+((e&f)^(~e&g))+K[i]+w[i])>>>0,t2=((rotate(a,2)^rotate(a,13)^rotate(a,22))+((a&b)^(a&c)^(b&c)))>>>0;j=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;}
+      [a,b,c,d,e,f,g,j].forEach((v,i)=>h[i]=(h[i]+v)>>>0);
+    }
+    return Array.from(h,v=>v.toString(16).padStart(8,'0')).join('');
+  }
+  async function fingerprint(text){const bytes=new TextEncoder().encode(text);try{if(globalThis.crypto?.subtle){const hash=await globalThis.crypto.subtle.digest('SHA-256',bytes);return Array.from(new Uint8Array(hash),v=>v.toString(16).padStart(2,'0')).join('');}}catch(_){}return sha256Fallback(bytes);}
+  function createCollector(meta={},clock=()=>performance.now()) {
+    const start=clock(),totals=Object.fromEntries(stages.map(key=>[key,0])),counts=Object.fromEntries(countKeys.map(key=>[key,0]));
+    let last=start,pauseStart=null,paused=0,firstComplete=null,initial=null,final=null,ended=null,netMap=new Map(),sequence=0,rounds=null;
+    const stack=[],nets=new Map(),progress=[];
+    const activeNow=()=>Math.max(0,(pauseStart??ended??clock())-start-paused);
+    function flush(){const now=pauseStart??ended??clock(),delta=Math.max(0,now-last);totals[stack.at(-1)?.stage||'other']+=delta;last=now;}
+    function netEntry(id){if(!netMap.has(id))return null;if(!nets.has(id))nets.set(id,{netIndex:netMap.get(id),searches:0,gridPositions:0,activeMs:0});return nets.get(id);}
+    function begin(stage,netId){if(!stages.includes(stage))stage='other';flush();const item={stage,netId,id:++sequence,started:activeNow()};stack.push(item);let closed=false;return()=>{if(closed)return;closed=true;flush();const index=stack.indexOf(item);if(index>=0)stack.splice(index,1);if(stage==='searching'){const n=netEntry(netId);if(n)n.activeMs+=Math.max(0,activeNow()-item.started);}};}
+    function count(key,delta=1,netId){if(!countKeys.includes(key)||!finite(delta))return;counts[key]=Math.min(Number.MAX_SAFE_INTEGER,counts[key]+delta);const n=netEntry(netId);if(n&&['searches','gridPositions'].includes(key))n[key]=Math.min(Number.MAX_SAFE_INTEGER,n[key]+delta);}
+    function checkpoint(value,fromInput=false){const s=cleanStats(value);if(!s?.drcChecked||!s?.widthRulesChecked)return;const at=activeNow();if(fromInput&&!initial)initial=s;final=s;if(completeStats(s)&&firstComplete===null)firstComplete=at;const point={activeMs:at,unrouted:s.unrouted,traceLengthMm:s.traceLengthMm,viaCount:s.viaCount,ruleIssues:s.totalViolations};const prev=progress.at(-1);if(!prev||prev.unrouted!==point.unrouted||prev.ruleIssues!==point.ruleIssues||prev.traceLengthMm!==point.traceLengthMm||prev.viaCount!==point.viaCount)progress.push(point);if(progress.length>256){for(let i=progress.length-3;i>0;i-=2)progress.splice(i,1);}}
+    function snapshot(status='running',partial=true){flush();const at=activeNow();const hard=Array.from(nets.values(),v=>({...v}));for(const item of stack){if(item.stage!=='searching'||!netMap.has(item.netId))continue;let n=hard.find(v=>v.netIndex===netMap.get(item.netId));if(!n){n={netIndex:netMap.get(item.netId),searches:0,gridPositions:0,activeMs:0};hard.push(n);}n.activeMs+=Math.max(0,at-item.started);}return {schema,schemaVersion:version,appVersion:meta.appVersion||'0.2.16',protocol:meta.settings?.benchmarkMode?'fixed-work-v1':'normal-v1',status,complete:completeStats(final),boardFingerprint:meta.boardFingerprint||null,workloadFingerprint:meta.workloadFingerprint||null,settings:cleanSettings(meta.settings),environment:{...meta.environment,workerCount:1},timing:{activeMs:at,firstCompleteMs:firstComplete,measuredThroughMs:at,pausedMs:paused+(pauseStart===null?0:Math.max(0,clock()-pauseStart))},stages:stages.filter(name=>totals[name]>0).map(name=>({name,activeMs:totals[name]})),counters:{...counts},rounds:rounds?JSON.parse(JSON.stringify(rounds)):null,initial,final,progress:progress.map(p=>({...p})),hardestNets:hard.sort((a,b)=>b.gridPositions-a.gridPositions||b.activeMs-a.activeMs||a.netIndex-b.netIndex).slice(0,20),coverage:{partial}};}
+    return {begin,count,grid(){},observeChecked(value){if(completeStats(value)&&firstComplete===null)firstComplete=activeNow();},checkpoint,snapshot,setNets(value){netMap=new Map(value.map((n,i)=>[n.id,i+1]));},setRounds(value){rounds=value||rounds;},setFingerprints(boardFingerprint,workloadFingerprint){meta.boardFingerprint=boardFingerprint;meta.workloadFingerprint=workloadFingerprint;},pause(){if(pauseStart!==null)return;flush();pauseStart=clock();last=pauseStart;},resume(){if(pauseStart===null)return;const now=clock();paused+=Math.max(0,now-pauseStart);pauseStart=null;last=now;},finish(status='completed'){if(pauseStart!==null)this.resume();flush();ended=clock();return snapshot(status,false);}};
+  }
+  function validateReport(input) {
+    const fail=()=>{throw new Error('This is not a valid RamenRouter benchmark report.');};
+    if(typeof input==='string'){if(input.length>256*1024)throw new Error('Benchmark reports must be smaller than 256 KiB.');try{input=JSON.parse(input);}catch(_){fail();}}
+    if(!plain(input)||input.schema!==schema||input.schemaVersion!==version||!str(input.appVersion,40)||!['normal-v1','fixed-work-v1'].includes(input.protocol)||!['running','paused','completed','stopped','error','timed_out'].includes(input.status))fail();
+    const hex=v=>v===null||(typeof v==='string'&&/^[a-f0-9]{64}$/.test(v));
+    if(!hex(input.boardFingerprint)||!hex(input.workloadFingerprint)||!plain(input.settings)||!plain(input.environment)||!plain(input.timing)||!plain(input.counters)||!plain(input.coverage))fail();
+    const timing={};for(const key of ['activeMs','measuredThroughMs','pausedMs']){if(!finite(input.timing[key],1e12))fail();timing[key]=input.timing[key];}if(input.timing.firstCompleteMs!==null&&!finite(input.timing.firstCompleteMs,timing.activeMs))fail();timing.firstCompleteMs=input.timing.firstCompleteMs;if(timing.measuredThroughMs>timing.activeMs+.01)fail();
+    const settings=cleanSettings(input.settings);for(const key of boolSettings)if(typeof input.settings[key]!=='boolean')fail();if(!['maxPasses','timeoutMinutes'].every(key=>key in input.settings)||!str(input.settings.quality,32))fail();for(const key of ['gridStep','viaCost'])if(key in input.settings&&(!finite(input.settings[key])||input.settings[key]<=0))fail();for(const key of boolSettings)if(key in input.settings&&typeof input.settings[key]!=='boolean')fail();for(const key of ['timeoutMinutes','maxPasses'])if(key in input.settings&&(!Number.isInteger(input.settings[key])||input.settings[key]<1||input.settings[key]>(key==='maxPasses'?100:1440)))fail();
+    if((input.protocol==='fixed-work-v1')!==(settings.benchmarkMode===true))fail();
+    const environment={workerCount:1};if(input.environment.workerCount!==1)fail();for(const key of ['browser','userAgent','platform','deviceLabel'])if(key in input.environment){if(!str(input.environment[key],key==='userAgent'?512:key==='deviceLabel'?80:160))fail();environment[key]=input.environment[key];}if(input.environment.hardwareConcurrency!==undefined&&input.environment.hardwareConcurrency!==null){if(!Number.isInteger(input.environment.hardwareConcurrency)||!finite(input.environment.hardwareConcurrency,4096))fail();environment.hardwareConcurrency=input.environment.hardwareConcurrency;}for(const key of ['animationEnabled','initialAnimationEnabled','animationChanged'])if(input.environment[key]!==undefined){if(typeof input.environment[key]!=='boolean')fail();environment[key]=input.environment[key];}
+    const stats=s=>{if(s===null)return null;if(!plain(s))fail();for(const key of statKeys)if(!finite(s[key])||(key!=='traceLengthMm'&&!Number.isInteger(s[key])))fail();if(!finite(s.unrouted)||typeof s.drcChecked!=='boolean'||typeof s.widthRulesChecked!=='boolean')fail();return cleanStats(s);};
+    if(!Array.isArray(input.stages)||input.stages.length>stages.length||!Array.isArray(input.progress)||input.progress.length>256||!Array.isArray(input.hardestNets)||input.hardestNets.length>20)fail();
+    const seen=new Set();const stageList=input.stages.map(s=>{if(!plain(s)||!stages.includes(s.name)||seen.has(s.name)||!finite(s.activeMs,timing.activeMs+1))fail();seen.add(s.name);return {name:s.name,activeMs:s.activeMs};});if(stageList.reduce((a,s)=>a+s.activeMs,0)>timing.activeMs+2)fail();
+    let last=-1;const progress=input.progress.map(p=>{if(!plain(p)||!finite(p.activeMs,timing.activeMs)||p.activeMs<last)fail();last=p.activeMs;const result={activeMs:p.activeMs};for(const key of ['unrouted','traceLengthMm','viaCount','ruleIssues']){if(!finite(p[key])||(key!=='traceLengthMm'&&!Number.isInteger(p[key])))fail();result[key]=p[key];}return result;});
+    const hardestNets=input.hardestNets.map(n=>{if(!plain(n)||!Number.isInteger(n.netIndex)||n.netIndex<1||n.netIndex>10000000||!finite(n.activeMs,timing.activeMs+1)||!finite(n.searches)||!Number.isInteger(n.searches)||!finite(n.gridPositions)||!Number.isInteger(n.gridPositions))fail();return {netIndex:n.netIndex,activeMs:n.activeMs,searches:n.searches,gridPositions:n.gridPositions};});
+    const counters={};for(const key of countKeys){if(!finite(input.counters[key])||!Number.isInteger(input.counters[key]))fail();counters[key]=input.counters[key];}
+    let rounds=null;if(input.rounds!==null&&input.rounds!==undefined){if(!plain(input.rounds))fail();rounds={};for(const key of ['attempt','repair','refinement'])if(input.rounds[key]){const value=input.rounds[key];if(!plain(value))fail();rounds[key]={};for(const field of ['current','limit','completed'])if(field in value){if(!finite(value[field],10000000)||!Number.isInteger(value[field]))fail();rounds[key][field]=value[field];}if('conditional' in value){if(typeof value.conditional!=='boolean')fail();rounds[key].conditional=value.conditional;}if('status' in value){if(!str(value.status,40))fail();rounds[key].status=value.status;}}}
+    const initial=stats(input.initial),final=stats(input.final);if(typeof input.coverage.partial!=='boolean'||typeof input.complete!=='boolean'||input.complete!==completeStats(final))fail();if(input.status==='completed'&&(!initial||!final))fail();if(input.complete&&timing.firstCompleteMs===null)fail();
+    return {schema,schemaVersion:version,appVersion:input.appVersion,protocol:input.protocol,status:input.status,complete:completeStats(final),boardFingerprint:input.boardFingerprint,workloadFingerprint:input.workloadFingerprint,settings,environment,timing,stages:stageList,counters,rounds,initial,final,progress,hardestNets,coverage:{partial:input.coverage.partial}};
+  }
+  function compareReports(a,b){a=validateReport(a);b=validateReport(b);const reasons=[];if(!a.boardFingerprint||a.boardFingerprint!==b.boardFingerprint)reasons.push('Different boards or input rules.');if(!a.workloadFingerprint||a.workloadFingerprint!==b.workloadFingerprint||JSON.stringify(a.settings)!==JSON.stringify(b.settings))reasons.push('Different routing settings or workloads.');if(a.appVersion!==b.appVersion)reasons.push('Different router versions.');if(a.protocol!==b.protocol)reasons.push('Different benchmark protocols.');if(a.protocol!=='fixed-work-v1'||b.protocol!=='fixed-work-v1')reasons.push('Use fixed-work benchmark mode for a fair speed comparison.');if(a.status!=='completed'||b.status!=='completed'||!a.complete||!b.complete||a.coverage.partial||b.coverage.partial)reasons.push('Both runs must finish with fully checked, complete results.');if(a.environment.animationChanged||b.environment.animationChanged||a.environment.animationEnabled!==b.environment.animationEnabled)reasons.push('Different live animation settings.');const resultKeys=['unrouted','totalViolations','belowNominalWidthTraceCount','traceCount','viaCount','traceLengthMm'];if(resultKeys.some(key=>Math.abs((a.final?.[key]??0)-(b.final?.[key]??0))>1e-6)||countKeys.some(key=>a.counters[key]!==b.counters[key]))reasons.push('The runs performed different search work or produced different results.');const comparable=reasons.length===0&&a.timing.activeMs>0&&b.timing.activeMs>0;return {comparable,reasons,speedup:comparable?a.timing.activeMs/b.timing.activeMs:null,elapsedRatio:comparable?b.timing.activeMs/a.timing.activeMs:null,firstCompleteSpeedup:comparable&&a.timing.firstCompleteMs>0&&b.timing.firstCompleteMs>0?a.timing.firstCompleteMs/b.timing.firstCompleteMs:null};}
+  return {createCollector,fingerprint,sha256Fallback,cleanSettings,cleanStats,completeStats,validateReport,compareReports};
+}
+if(typeof module!=='undefined'&&module.exports)module.exports=createRamenBenchmark;
+if(typeof globalThis!=='undefined'){globalThis.createRamenBenchmark=createRamenBenchmark;globalThis.RamenBenchmark=createRamenBenchmark();}

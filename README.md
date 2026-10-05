@@ -147,6 +147,32 @@ Make any placement changes in your PCB editor, export a new .dsn and try again.
 Suggestions are starting points, not a promise that moving a part will finish
 the board. When an export omits component names, advice uses pad and net labels.
 
+## See how a run performed
+
+Open **Run report** after routing to see how long it took, when the first
+complete checked route was found, and where the processing time went. Review
+the progress graph, search effort, attempts and repairs alongside the result's
+remaining connections, rule issues, trace length and via count. Paused time
+is kept separate. Stopped runs show the measurements received before stopping,
+so you can distinguish partial measurements from a finished run.
+
+For comparisons between computers, enable **Fixed-work benchmark** in
+**Routing rules** before starting. It gives difficult fanout searches a fixed
+amount of work instead of a machine-dependent time cutoff. You can still stop
+the job or extend its time limit. Leave it off for normal routing.
+
+Choose **Export benchmark** to save a report, then use **Compare benchmark**
+on another computer to open it alongside that computer's result. Add a device
+label to tell the runs apart. The exported report includes a board fingerprint
+and settings, but no board geometry or net names. Keep the same input file,
+rules, router version and Live work setting for a useful comparison.
+
+The comparison explains when runs do not match. A speed comparison requires
+finished, fully checked benchmark runs with matching work and results.
+Browser and background activity can still affect the time; repeat a run when
+a result looks unusual. This measures RamenRouter's single-worker browser
+workload. It does not measure the performance of every processor core at once.
+
 ## Keep and review your results
 
 Download anything you want to keep **before starting another run, closing the

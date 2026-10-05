@@ -14,6 +14,14 @@ function createRamenOptimizer(geometry, yieldTask) {
     return [[a,first,b],[a,second,b]];
   }
   async function optimize(input,options={},emit=()=>{},isCancelled=()=>false,reportWork=()=>{}){
+    const measurement=yieldTask?.measurement,finishRefinement=measurement?.begin('refining');
+    measurement?.count('refinementRounds');
+    let candidateNet=null,pendingCandidates=0;
+    const flush=()=>{if(pendingCandidates){measurement?.count('refinementCandidates',pendingCandidates,candidateNet);pendingCandidates=0;}};
+    const pause=()=>{flush();return wait();};
+    const validate=board=>{const finish=measurement?.begin('checking');try{return G.validate(board);}finally{finish?.();}};
+    const connectivity=board=>{const finish=measurement?.begin('checking');try{return G.connectivity(board);}finally{finish?.();}};
+    try{
     let lastDetail=0;
     let lastWork=0,workKind=null;
     const work=(kind,processed,total,force=false)=>{
@@ -25,8 +33,8 @@ function createRamenOptimizer(geometry, yieldTask) {
     const clearSpatial=stage=>{if(!hasSpatial)return;hasSpatial=false;lastSpatial=0;emit({type:'activity',phase:'optimizing',activity:{stage,visual:null}});};
 
     const detail=(message,activity={},force=false)=>{const now=Date.now();if(!force&&now-lastDetail<1200)return;lastDetail=now;emit({type:'progress',phase:'optimizing',message,activity});};
-    detail('Checking the route before refinement',{stage:'refinement-check'},true);await wait();
-    let board=clone(input);work('checking',0,2,true);const base=G.validate(board);work('checking',1,2,true);let unrouted=G.connectivity(board).unrouted;work('checking',2,2,true);
+    detail('Checking the route before refinement',{stage:'refinement-check'},true);await pause();
+    let board=clone(input);work('checking',0,2,true);const base=validate(board);work('checking',1,2,true);let unrouted=connectivity(board).unrouted;work('checking',2,2,true);
     const nets=new Map(board.nets.map(n=>[n.id,n])),edges=G.boundaryEdges(board);
     let changed=0,removed=0;
     const originalLength=board.traces.reduce((s,t)=>s+length(t.points),0);
@@ -39,9 +47,10 @@ function createRamenOptimizer(geometry, yieldTask) {
     for(let ordinal=0;ordinal<traceOrder.length&&!isCancelled();ordinal++){
       const index=traceOrder[ordinal];
       const trace=board.traces[index];
+      flush();candidateNet=trace.net;
       detail('Refining paths · '+(ordinal+1)+'/'+board.traces.length+' · '+(nets.get(trace.net)?.name||'unnamed net'),{stage:'refinement-traces',processed:ordinal+1,total:board.traces.length,netId:trace.net,netName:nets.get(trace.net)?.name});
       spatial('Inspecting trace · '+(nets.get(trace.net)?.name||'unnamed net'),{stage:'refinement-trace',netId:trace.net,netName:nets.get(trace.net)?.name},()=>({kind:'trace',paths:[{layer:trace.layer,points:trace.points.slice(0,512).map(p=>p.slice(0,2))}],label:trace.points.length>512?'Current trace · first section':'Current trace for refinement'}));
-      if(ordinal%6===0){await wait();if(isCancelled())break;}
+      if(ordinal%6===0){await pause();if(isCancelled())break;}
       if(trace.fixed||trace.points.length<3){processedTraces++;work('traces',processedTraces,totalTraces);continue;}
       const net=nets.get(trace.net),ownClear=net?.routingClearance??net?.clearance??0;
       const primitives=G.copper(board).primitives.filter(p=>p.layer===trace.layer&&p.net!==trace.net);
@@ -66,7 +75,8 @@ function createRamenOptimizer(geometry, yieldTask) {
         for(let j=previous.length-1;j>i+1;j--){
           const old=length(previous.slice(i,j+1));
           for(const candidate of shortcuts(previous[i],previous[j])){
-            if(++candidatesChecked%128===0){work('traces',processedTraces,totalTraces);detail('Trying shorter paths · '+(net?.name||'unnamed net')+' · trace '+(ordinal+1)+'/'+board.traces.length+' · '+candidatesChecked+' shortcuts checked',{stage:'refinement-shortcuts',netId:trace.net,netName:net?.name,processed:ordinal+1,total:board.traces.length,candidates:candidatesChecked});if(Date.now()-lastShortcutYield>=24){await wait();lastShortcutYield=Date.now();}if(isCancelled())break refineTrace;}
+            pendingCandidates++;
+            if(++candidatesChecked%128===0){work('traces',processedTraces,totalTraces);detail('Trying shorter paths · '+(net?.name||'unnamed net')+' · trace '+(ordinal+1)+'/'+board.traces.length+' · '+candidatesChecked+' shortcuts checked',{stage:'refinement-shortcuts',netId:trace.net,netName:net?.name,processed:ordinal+1,total:board.traces.length,candidates:candidatesChecked});if(Date.now()-lastShortcutYield>=24){await pause();lastShortcutYield=Date.now();}if(isCancelled())break refineTrace;}
             const candidateId=++visualCandidateId;spatial('Testing shortcut · '+(net?.name||'unnamed net'),{stage:'refinement-shortcut',netId:trace.net,netName:net?.name,candidateId},()=>({kind:'candidate',paths:[{layer:trace.layer,points:candidate.map(p=>p.slice(0,2))}],label:'Actual shortcut candidate · being checked'}));
             if(length(candidate)>=old-EPS)continue;
             if(candidate.slice(1).every((p,k)=>safe(candidate[k],p))){chosen=candidate;end=j;break;}
@@ -81,33 +91,35 @@ function createRamenOptimizer(geometry, yieldTask) {
       if(length(candidate)<length(previous)-EPS){
         trace.points=candidate;
         // Shortcutting a trunk must not disconnect branches that join its interior.
-        const next=G.connectivity(board).unrouted;
+        const next=connectivity(board).unrouted;
         if(next<=unrouted){changed++;unrouted=next;}else trace.points=previous;
       }
       processedTraces++;work('traces',processedTraces,totalTraces);
     }
+    flush();
     work('traces',processedTraces,totalTraces,true);
     // Remove electrically redundant generated vias, checking the complete copper graph.
     const totalVias=board.vias.length;let processedVias=0;work('vias',0,totalVias,true);
     detail('Checking redundant vias · '+totalVias+' vias',{stage:'refinement-vias',processed:0,total:totalVias},true);
     for(let index=board.vias.length-1;index>=0&&!isCancelled();index--){
       detail('Checking redundant vias · '+(totalVias-index)+'/'+totalVias+' · '+removed+' removed',{stage:'refinement-vias',processed:totalVias-index,total:totalVias,removed});
-      if(index%8===0){await wait();if(isCancelled())break;}
+      if(index%8===0){await pause();if(isCancelled())break;}
       if(board.vias[index].fixed){processedVias++;work('vias',processedVias,totalVias);continue;}
-      const via=board.vias[index];spatial('Testing redundant via · '+(nets.get(via.net)?.name||'unnamed net'),{stage:'refinement-via',netId:via.net,netName:nets.get(via.net)?.name},()=>({kind:'via',points:via.layers.slice(0,64).map(layer=>[via.x,via.y,layer]),label:'Current via · testing whether it is needed'}));board.vias.splice(index,1);
-      const next=G.connectivity(board).unrouted;
+      const via=board.vias[index];measurement?.count('redundantViaChecks',1,via.net);spatial('Testing redundant via · '+(nets.get(via.net)?.name||'unnamed net'),{stage:'refinement-via',netId:via.net,netName:nets.get(via.net)?.name},()=>({kind:'via',points:via.layers.slice(0,64).map(layer=>[via.x,via.y,layer]),label:'Current via · testing whether it is needed'}));board.vias.splice(index,1);
+      const next=connectivity(board).unrouted;
       if(next<=unrouted){removed++;unrouted=next;}else board.vias.splice(index,0,via);
       processedVias++;work('vias',processedVias,totalVias);
     }
     work('vias',processedVias,totalVias,true);
-    clearSpatial('refinement-final-check');detail('Checking refined route clearances and connectivity',{stage:'refinement-final-check',changed,removed},true);await wait();
-    work('checking',0,2,true);const checked=G.validate(board);work('checking',1,2,true);const beforeConnections=G.connectivity(input).unrouted;work('checking',2,2,true);
+    clearSpatial('refinement-final-check');detail('Checking refined route clearances and connectivity',{stage:'refinement-final-check',changed,removed},true);await pause();
+    work('checking',0,2,true);const checked=validate(board);work('checking',1,2,true);const beforeConnections=connectivity(input).unrouted;work('checking',2,2,true);
     if(checked.totalViolations>base.totalViolations||checked.clearanceViolations>base.clearanceViolations||checked.belowNominalWidthTraceCount>base.belowNominalWidthTraceCount||unrouted>beforeConnections){
       emit({type:'progress',phase:'optimizing',message:'Refinement rejected by final rule/connectivity check; original checked board retained.'});return input;
     }
     const savings=(originalLength-board.traces.reduce((s,t)=>s+length(t.points),0))*board.units.mmPerUnit;
     emit({type:'progress',phase:'optimizing',message:'Refinement: '+changed+' paths shortened, '+removed+' redundant vias removed, '+savings.toFixed(4)+' mm saved.',board});
     return board;
+    }finally{flush();finishRefinement?.();}
   }
   return {optimize};
 }
