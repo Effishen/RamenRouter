@@ -91,18 +91,19 @@ preference off and retry. It changes the setting only when you choose to.
 
 Want a particular net to stay on one side of the board? In **Routing rules**,
 open **Net rules**, find the net, and select its main routing layers.
-You can choose one layer or several. Changing a layer selection also enables
-**Allow pad escapes** for that net: a short trace may leave a surface-mount pad
-on its own layer, reach a nearby via, and continue on a selected layer.
-With vias in surface-mount pads disabled, that via must sit outside the pad.
-The rest of the route stays on the selected layers. This necessary pad access
-still runs when general fanout is turned off.
+You can choose one layer or several. If a surface-mount pad sits on another
+layer and vias inside SMD pads are off, RamenRouter automatically tries a
+short, full-width trace to a nearby via outside the pad. From there, the route
+stays on the selected layers. This works at either end of a connection and
+for imported layer rules too, even when general fanout is turned off.
 
-Uncheck **Allow pad escapes** when every trace must stay on the selected
-layers. Imported layer rules keep this stricter behavior unless pad escapes
-were explicitly allowed in RamenRouter. **Reset** restores that net's choices
-from your imported file. These choices affect routing; the preview's
-**Visible layers** controls only change what you see.
+The separate SMD-via option permits vias inside pads when enabled; it does
+not require them. With all layers selected, routing keeps its usual behavior.
+Every route still follows clearances, widths and the other routing rules.
+
+**Reset** restores that net's layer and shorter-route choices from your
+imported file. These choices affect routing; the preview's **Visible layers**
+controls only change what you see.
 
 Enable **Prefer shorter routes** for nets where length matters. RamenRouter
 gives these nets earlier routing priority and favours shorter paths, even
@@ -129,8 +130,8 @@ to its input routing, keeping its imported traces and vias. If existing traces
 violate your layer choices, revise the selection or choose **Clear routing & start
 over**. Pads and through vias keep their physical layer spans. Some layer
 choices can leave pads hard to reach, so review any warnings, then click
-**Start routing** when ready. Your exported DSN keeps your layer selections
-and pad-escape and shorter-route preferences for reopening in RamenRouter.
+**Start routing** when ready. Your exported DSN keeps your layer selections,
+via-placement rules and shorter-route preferences for reopening in RamenRouter.
 
 If no legal pad escape is found, the log identifies the affected pads instead
 of retrying the same inaccessible connection on every pass. Review the pad

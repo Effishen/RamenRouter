@@ -65,7 +65,7 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
       emit({type:'progress',phase,pass:routeActivity.pass||0,message,activity:{...routeActivity,...activity}});return true;
     };
     let original=copy(input);original.traces=original.traces||[];original.vias=original.vias||[];
-    if(options.viaInPad){original.viaAtSmd=true;original.viaInPadApplied=true;for(const v of original.viaDefs)v.attachAllowed=true;}
+    if(typeof options.viaInPad==='boolean'){original.viaAtSmd=options.viaInPad;original.viaInPadApplied=options.viaInPad;original.viaInPadOverride=options.viaInPad;for(const v of original.viaDefs)v.attachAllowed=options.viaInPad;}
     const rules=netRules(original),padCounts=new Map(original.nets.map(n=>[n.id,original.pads.filter(p=>p.net===n.id).length])), nets=original.nets.filter(n=>original.pads.filter(p=>p.net===n.id).length>1);
     const shortNets=new Set(nets.filter(n=>n.preferShort===true).map(n=>n.id));
     const preferShort=net=>shortNets.has(net.id);
@@ -77,8 +77,9 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
     function stats(board,checked=true){const finish=measurement?.begin('checking');try{clearSpatial('connectivity-check');detail('Checking connected copper',{stage:'connectivity-check'},'checking');const refining=counters.refinement.status==='running',checks=checked?2:1;if(refining)refinementWork({kind:'checking',processed:0,total:checks});let conn=connectivity(board);if(refining)refinementWork({kind:'checking',processed:1,total:checks});if(checked)detail('Checking copper clearances and routing rules',{stage:'rule-check'},'checking');let v=checked?G.validate(board):null;if(refining&&checked)refinementWork({kind:'checking',processed:2,total:checks});const result={unrouted:conn.unrouted,viaCount:board.vias.length,traceCount:board.traces.length,traceLengthMm:board.traces.reduce((a,t)=>a+length(t),0)*(board.units.mmPerUnit||1),...(shortNets.size?{preferredTraceLengthMm:board.traces.reduce((a,t)=>a+(shortNets.has(t.net)?length(t):0),0)*(board.units.mmPerUnit||1)}:{}),clearanceViolations:v?v.clearanceViolations:null,totalViolations:v?v.totalViolations:null,viaInPadViolations:v?v.viaInPadViolations:null,outlineViolations:v?v.outlineViolations:null,keepoutViolations:v?v.keepoutViolations:null,drcChecked:!!v,belowNominalWidthTraceCount:v?v.belowNominalWidthTraceCount:0,widthRulesChecked:!!v,netCount:board.nets.length,componentCount:new Set(board.pads.map(p=>p.component)).size,layerCount:board.layers.length};if(checked)measurement?.observeChecked?.(result);return result;}finally{finish?.();}}
     detail('Checking input clearances and connectivity',{stage:'input-check'},'checking',true);await yieldNow();
     const initialStats=stats(original),baseViolation=initialStats.clearanceViolations,baseWidth=initialStats.belowNominalWidthTraceCount,baseTotal=initialStats.totalViolations;
+    if(options.viaInPad===false&&initialStats.viaInPadViolations){const error=new Error('Existing vias overlap SMD pads while vias in SMD pads are disabled. Clear routing & start over, or enable vias in SMD pads before routing.');error.code='VIA_IN_PAD_CONFLICT';throw error;}
     let originalStats=initialStats;
-    const needsLayerAccess=original.pads.some(p=>{const net=rules.get(p.net);return net?.allowPadEscape===true&&new Set(p.shapes.map(s=>s.layer)).size===1&&net.useLayers&&!net.useLayers.includes(p.shapes[0].layer);});
+    const needsLayerAccess=original.pads.some(p=>{const net=rules.get(p.net);return net&&new Set(p.shapes.map(s=>s.layer)).size===1&&net.useLayers&&!net.useLayers.includes(p.shapes[0].layer);});
     if((options.fanout!==false||options.fanoutOnly||needsLayerAccess)&&fanout&&!stopped()){
       const accessOnly=options.fanout===false&&!options.fanoutOnly;
       say(accessOnly?'Preparing local pad access to selected main routing layers.':'Preparing checked SMD escapes.',{phase:'fanout',stats:initialStats});
@@ -109,7 +110,7 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
       inaccessibleGroups.set(component.net,missing.length);
       if(component.groups.length-missing.length<=1)inaccessibleNets.add(component.net);
       const pads=missing.flatMap(group=>group.pads),label=pads.slice(0,4).join(', ')+(pads.length>4?' and '+(pads.length-4)+' more':'');
-      const action=net?.allowPadEscape?'No legal local escape was found. Choose another main layer, move nearby copper or allow vias in SMD pads.':'Enable short pad escapes, include a pad layer or allow vias in SMD pads.';
+      const action='No legal local escape was found. Choose another main layer, move nearby copper or allow vias in SMD pads.';
       say('Cannot reach selected main layers for '+net.name+(label?' at '+label:'')+'. '+action+' Skipping repeated attempts for this unchanged attachment.',{phase:'routing',activity:{stage:'layer-access-blocked',netId:net.id,netName:net.name,padIds:pads}});
     }
     const routingNets=nets.filter(net=>!inaccessibleNets.has(net.id));

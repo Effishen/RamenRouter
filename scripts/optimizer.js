@@ -102,7 +102,7 @@ function createRamenOptimizer(geometry, yieldTask) {
     // A local off-layer escape must still terminate in a real transition even
     // if another same-net path makes that via electrically redundant.
     const escapeVias=new Set();
-    for(const trace of board.traces){const net=nets.get(trace.net);if(net?.allowPadEscape!==true||!net.useLayers||net.useLayers.includes(trace.layer)||!G.isPermittedLayerEscape(board,trace,net))continue;for(const via of board.vias)if(via.net===trace.net&&[trace.points[0],trace.points[trace.points.length-1]].some(p=>Math.hypot(p[0]-via.x,p[1]-via.y)<EPS))escapeVias.add(via);}
+    for(const trace of board.traces){const net=nets.get(trace.net);if(!net?.useLayers||net.useLayers.includes(trace.layer)||!G.isPermittedLayerEscape(board,trace,net))continue;for(const via of board.vias)if(via.net===trace.net&&[trace.points[0],trace.points[trace.points.length-1]].some(p=>Math.hypot(p[0]-via.x,p[1]-via.y)<EPS))escapeVias.add(via);}
     const totalVias=board.vias.length;let processedVias=0;work('vias',0,totalVias,true);
     detail('Checking redundant vias · '+totalVias+' vias',{stage:'refinement-vias',processed:0,total:totalVias},true);
     for(let index=board.vias.length-1;index>=0&&!isCancelled();index--){

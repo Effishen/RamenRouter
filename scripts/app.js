@@ -35,7 +35,6 @@
   let netLayersData = null;
   let netLayerDrafts = new Map();
   let netShortDrafts = new Map();
-  let netPadEscapeDrafts = new Map();
   let routingOptionsBeforeDialog = null;
   let pendingRoutingOptions = null;
   let dismissedDirectionJobId = null;
@@ -1380,8 +1379,7 @@
 
   function sameRoutingRule(net, imported = false) {
     return sameLayerSelection(netLayerDrafts.get(net.id), imported ? net.importedLayers : net.allowedLayers) &&
-      netShortDrafts.get(net.id) === Boolean(imported ? net.importedPreferShort : net.preferShort) &&
-      netPadEscapeDrafts.get(net.id) === Boolean(imported ? net.importedAllowPadEscape : net.allowPadEscape);
+      netShortDrafts.get(net.id) === Boolean(imported ? net.importedPreferShort : net.preferShort);
   }
 
   function filteredNetLayerNets() {
@@ -1428,12 +1426,12 @@
   function discardRoutingRuleDraft() {
     if (routingOptionsBeforeDialog) writeRoutingOptions(routingOptionsBeforeDialog);
     routingOptionsBeforeDialog = null;
-    netLayersData = null; netLayerDrafts.clear(); netShortDrafts.clear(); netPadEscapeDrafts.clear();
+    netLayersData = null; netLayerDrafts.clear(); netShortDrafts.clear();
   }
 
   function updateNetLayerDraftStatus() {
     if (!netLayersData) return;
-    let changed = 0, invalid = 0, inaccessible = 0, strictPads = 0;
+    let changed = 0, invalid = 0, inaccessible = 0;
     const shownNets = filteredNetLayerNets(), shownIds = new Set(shownNets.map(net => net.id));
     const unavailable = !connected || busy || isActive() || currentState?.job?.id !== netLayersData.jobId;
     for (const net of netLayersData.nets) {
@@ -1445,13 +1443,12 @@
       if (edited) changed++;
       if (!selected.size) invalid++;
       inaccessible += unreachable;
-      if (!netPadEscapeDrafts.get(net.id)) strictPads += unreachable;
       row.hidden = !shownIds.has(net.id);
       row.classList.toggle('net-layer-invalid', selected.size === 0);
       row.classList.toggle('net-layer-edited', edited);
       net.status.textContent = !selected.size ? 'Select at least one layer' : (imported ? 'Imported rules' : 'Custom rules');
       net.padWarning.hidden = !unreachable;
-      net.padWarning.textContent = unreachable ? `${number(unreachable)} ${unreachable === 1 ? 'pad needs' : 'pads need'} access to main layers · ${netPadEscapeDrafts.get(net.id) ? 'short escapes allowed' : 'pad escapes off'}` : '';
+      net.padWarning.textContent = unreachable ? `${number(unreachable)} ${unreachable === 1 ? 'pad needs' : 'pads need'} a short escape to reach the main layers` : '';
       net.reset.disabled = unavailable || imported;
       for (const checkbox of row.querySelectorAll('input[data-layer-id]')) {
         checkbox.disabled = unavailable;
@@ -1460,8 +1457,6 @@
       }
       net.shortCheckbox.disabled = unavailable;
       net.shortCheckbox.checked = netShortDrafts.get(net.id);
-      net.escapeCheckbox.disabled = unavailable;
-      net.escapeCheckbox.checked = netPadEscapeDrafts.get(net.id);
     }
     for (const checkbox of $('netLayerHead').querySelectorAll('input[data-layer-id]')) {
       const layerId = Number(checkbox.dataset.layerId);
@@ -1475,16 +1470,11 @@
     shortHeading.checked = shownNets.length > 0 && shortCount === shownNets.length;
     shortHeading.indeterminate = shortCount > 0 && shortCount < shownNets.length;
     shortHeading.disabled = unavailable || shownNets.length === 0;
-    const escapeHeading = $('netPadEscapeAll');
-    const escapeCount = shownNets.filter(net => netPadEscapeDrafts.get(net.id)).length;
-    escapeHeading.checked = shownNets.length > 0 && escapeCount === shownNets.length;
-    escapeHeading.indeterminate = escapeCount > 0 && escapeCount < shownNets.length;
-    escapeHeading.disabled = unavailable || shownNets.length === 0;
     $('netLayerCount').textContent = `${number(shownNets.length)} of ${number(netLayersData.nets.length)} nets shown · ${number(changed)} ${changed === 1 ? 'change' : 'changes'} to apply`;
     $('netLayerValidation').hidden = !invalid;
     $('netLayerValidation').textContent = invalid ? `Select at least one layer for every net. ${number(invalid)} ${invalid === 1 ? 'net needs' : 'nets need'} a layer, including any hidden by your search.` : '';
     $('netLayerPadWarning').hidden = !inaccessible;
-    $('netLayerPadWarning').textContent = inaccessible ? `${number(inaccessible)} ${inaccessible === 1 ? 'pad has' : 'pads have'} no selected main layer. Short pad escapes can reach a selected layer using a nearby via outside the pad, where a legal route is available.${strictPads ? ` For ${number(strictPads)} of these pads, escapes are off: revise the main layers or enable Allow pad escapes if needed.` : ''} Vias inside SMD pads remain controlled separately.` : '';
+    $('netLayerPadWarning').textContent = inaccessible ? `${number(inaccessible)} ${inaccessible === 1 ? 'pad has' : 'pads have'} no selected main layer. The router will try a short, full-width trace to a nearby via outside the pad, then continue on a selected layer. A legal escape still needs available space. Vias inside SMD pads remain controlled separately.` : '';
     const optionsChanged = routingOptionsBeforeDialog && JSON.stringify(readRoutingOptions()) !== JSON.stringify(routingOptionsBeforeDialog);
     $('applyNetLayers').disabled = unavailable || invalid > 0 || (!changed && !optionsChanged);
     $('netLayersApplyNote').textContent = changed ? 'Save your current result first. Changing net rules replaces the routed result with the input board; imported copper stays. Routing options are saved only after these net rules pass their checks.' : 'Routing options apply to your next run. Your current result stays available.';
@@ -1507,18 +1497,6 @@
       updateNetLayerDraftStatus();
     });
     shortLabel.append(shortName, shortAll); shortHeading.append(shortLabel); heading.append(shortHeading);
-    const escapeHeading = document.createElement('th'); escapeHeading.scope = 'col'; escapeHeading.className = 'net-escape-column';
-    const escapeLabel = document.createElement('label'); escapeLabel.className = 'net-layer-column';
-    const escapeName = document.createElement('span'); escapeName.textContent = 'Allow pad escapes';
-    const escapeAll = document.createElement('input'); escapeAll.type = 'checkbox'; escapeAll.id = 'netPadEscapeAll'; escapeAll.dataset.allowPadEscape = 'all';
-    escapeAll.setAttribute('aria-label', 'Allow pad escapes: all shown nets');
-    escapeAll.setAttribute('aria-describedby', 'netPadEscapeDescription netLayerBulkHelp');
-    escapeAll.addEventListener('change', () => {
-      if (!connected || busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
-      for (const net of filteredNetLayerNets()) netPadEscapeDrafts.set(net.id, escapeAll.checked);
-      updateNetLayerDraftStatus();
-    });
-    escapeLabel.append(escapeName, escapeAll); escapeHeading.append(escapeLabel); heading.append(escapeHeading);
     for (const layer of netLayersData.layers) {
       const th = document.createElement('th'); th.scope = 'col';
       const label = document.createElement('label'); label.className = 'net-layer-column';
@@ -1530,7 +1508,6 @@
         if (!connected || busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
         for (const net of filteredNetLayerNets()) {
           const selected = netLayerDrafts.get(net.id);
-          if (selected.has(layer.id) !== checkbox.checked) netPadEscapeDrafts.set(net.id, true);
           if (checkbox.checked) selected.add(layer.id); else selected.delete(layer.id);
         }
         updateNetLayerDraftStatus();
@@ -1557,16 +1534,6 @@
         updateNetLayerDraftStatus();
       });
       shortCell.append(shortCheckbox); row.append(shortCell);
-      const escapeCell = document.createElement('td'); escapeCell.className = 'net-escape-column';
-      const escapeCheckbox = document.createElement('input'); escapeCheckbox.type = 'checkbox'; escapeCheckbox.dataset.allowPadEscape = String(net.id);
-      escapeCheckbox.setAttribute('aria-label', `${net.name}: Allow pad escapes`);
-      escapeCheckbox.setAttribute('aria-describedby', 'netPadEscapeDescription');
-      escapeCheckbox.addEventListener('change', () => {
-        if (!connected || busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
-        netPadEscapeDrafts.set(net.id, escapeCheckbox.checked);
-        updateNetLayerDraftStatus();
-      });
-      escapeCell.append(escapeCheckbox); row.append(escapeCell);
       for (const layer of netLayersData.layers) {
         const cell = document.createElement('td');
         const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.layerId = String(layer.id);
@@ -1574,7 +1541,6 @@
         checkbox.addEventListener('change', () => {
           if (busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
           const selected = netLayerDrafts.get(net.id);
-          if (selected.has(layer.id) !== checkbox.checked) netPadEscapeDrafts.set(net.id, true);
           if (checkbox.checked) selected.add(layer.id); else selected.delete(layer.id);
           updateNetLayerDraftStatus();
         });
@@ -1587,11 +1553,10 @@
         if (busy || isActive() || currentState?.job?.id !== netLayersData?.jobId) return;
         netLayerDrafts.set(net.id, new Set(net.importedLayers));
         netShortDrafts.set(net.id, Boolean(net.importedPreferShort));
-        netPadEscapeDrafts.set(net.id, Boolean(net.importedAllowPadEscape));
         updateNetLayerDraftStatus();
       });
       resetCell.append(reset); row.append(resetCell); rows.append(row);
-      net.row = row; net.status = status; net.padWarning = warning; net.reset = reset; net.shortCheckbox = shortCheckbox; net.escapeCheckbox = escapeCheckbox;
+      net.row = row; net.status = status; net.padWarning = warning; net.reset = reset; net.shortCheckbox = shortCheckbox;
     }
     $('netLayerRows').replaceChildren(rows);
     updateNetLayerDraftStatus();
@@ -1607,7 +1572,6 @@
       netLayersData = { ...data, layers: displayLayers(data.layers), nets: [...data.nets].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true, sensitivity: 'base' })) };
       netLayerDrafts = new Map(netLayersData.nets.map(net => [net.id, new Set(net.allowedLayers)]));
       netShortDrafts = new Map(netLayersData.nets.map(net => [net.id, Boolean(net.preferShort)]));
-      netPadEscapeDrafts = new Map(netLayersData.nets.map(net => [net.id, Boolean(net.allowPadEscape)]));
       routingOptionsBeforeDialog = readRoutingOptions();
       $('routingRulesError').hidden = true;
       $('netLayerSearch').value = '';
@@ -1623,7 +1587,7 @@
     if (!data || !connected || busy || isActive() || currentState?.job?.id !== data.jobId) return;
     if (!$('settingsForm').checkValidity()) { setRoutingRulesTab('options'); $('settingsForm').reportValidity(); return; }
     if (data.nets.some(net => !netLayerDrafts.get(net.id).size)) { setRoutingRulesTab('nets'); updateNetLayerDraftStatus(); return; }
-    const changes = data.nets.filter(net => !sameRoutingRule(net)).map(net => ({ netId: net.id, layers: data.layers.filter(layer => netLayerDrafts.get(net.id).has(layer.id)).map(layer => layer.id), preferShort: netShortDrafts.get(net.id), allowPadEscape: netPadEscapeDrafts.get(net.id) }));
+    const changes = data.nets.filter(net => !sameRoutingRule(net)).map(net => ({ netId: net.id, layers: data.layers.filter(layer => netLayerDrafts.get(net.id).has(layer.id)).map(layer => layer.id), preferShort: netShortDrafts.get(net.id) }));
     const options = readRoutingOptions(), previous = routingOptionsBeforeDialog;
     if (!changes.length) {
       routingOptionsBeforeDialog = null; saveSettings(options); discardRoutingRuleDraft(); $('netLayersDialog').close();
@@ -1925,7 +1889,6 @@
     if (!netLayersData || busy || isActive() || currentState?.job?.id !== netLayersData.jobId) return;
     netLayerDrafts = new Map(netLayersData.nets.map(net => [net.id, new Set(net.importedLayers)]));
     netShortDrafts = new Map(netLayersData.nets.map(net => [net.id, Boolean(net.importedPreferShort)]));
-    netPadEscapeDrafts = new Map(netLayersData.nets.map(net => [net.id, Boolean(net.importedAllowPadEscape)]));
     updateNetLayerDraftStatus();
   });
   $('fileInput').addEventListener('change', event => void upload(event.target.files[0]));

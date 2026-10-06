@@ -10,7 +10,7 @@
   let job = null, worker = null, workerUrl = null, inputText = null;
   let board = null, preview = null, exports = null, bestChecked = null, clearTransaction = null, ruleTransaction = null, importedNetRules = null, serial = 0, timer = null, watchdog = null;
   const logs = [];
-  const base = {appVersion:'0.2.17',engineVersion:'Ramen JS 0.2.17',fanoutVersion:'Ramen SMD escape'};
+  const base = {appVersion:'0.2.18',engineVersion:'Ramen JS 0.2.18',fanoutVersion:'Ramen SMD escape'};
   function notifyActivity() {
     const update={jobId:job?.id,state:job?.state,phase:job?.phase,activity:job?.activity,lastEngineUpdateAt:job?.lastEngineUpdateAt,operation:job?.operation,counters:job?.counters,deadlineAt:job?.deadlineAt,remainingSeconds:remaining(),startedAt:job?.startedAt,endedAt:job?.endedAt,pausedAt:job?.pausedAt,pausedDurationMs:job?.pausedDurationMs,budgetGeneration:job?.budgetGeneration};
     for(const fn of activitySubscribers){try{fn(update);}catch(_){}}
@@ -49,7 +49,6 @@
     const nets=(b?.nets||[]).map(net=>({id:net.id,name:net.name,
       allowedLayers:[...(net.useLayers||all)],importedLayers:[...(importedNetRules?.[net.id]?.layers||net.useLayers||all)],
       preferShort:net.preferShort===true,importedPreferShort:importedNetRules?.[net.id]?.preferShort??(net.preferShort===true),
-      allowPadEscape:net.allowPadEscape===true,importedAllowPadEscape:importedNetRules?.[net.id]?.allowPadEscape??(net.allowPadEscape===true),
       padLayers:padsByNet.get(net.id)||[]}));
     return {jobId:job?.id,layers,nets};
   }
@@ -57,9 +56,9 @@
     if(!job||!board)return;
     const settings=netLayerSettings(board),nets=new Map(settings.nets.map(net=>[net.id,net])),rawNets=new Map(board.nets.map(net=>[net.id,net]));
     const same=(a,b)=>a.length===b.length&&a.every(layer=>b.includes(layer));
-    job.layerRulesChanged=settings.nets.some(net=>!same(net.allowedLayers,net.importedLayers)||net.preferShort!==net.importedPreferShort||net.allowPadEscape!==net.importedAllowPadEscape);
+    job.layerRulesChanged=settings.nets.some(net=>!same(net.allowedLayers,net.importedLayers)||net.preferShort!==net.importedPreferShort);
     job.layerRuleSummary={restrictedNets:settings.nets.filter(net=>net.allowedLayers.length<settings.layers.length).length,
-      totalNets:settings.nets.length,shortRouteNets:settings.nets.filter(net=>net.preferShort).length,padEscapeNets:settings.nets.filter(net=>net.allowPadEscape).length,
+      totalNets:settings.nets.length,shortRouteNets:settings.nets.filter(net=>net.preferShort).length,
       conflictingTraces:(board.traces||[]).filter(trace=>nets.has(trace.net)&&!nets.get(trace.net).allowedLayers.includes(trace.layer)&&!hostGeometry.isPermittedLayerEscape(board,trace,rawNets.get(trace.net))).length,
       inaccessiblePads:settings.nets.reduce((count,net)=>count+net.padLayers.filter(layers=>!layers.some(layer=>net.allowedLayers.includes(layer))).length,0)};
     job.routingRulesChanged=job.layerRulesChanged;job.routingRuleSummary=job.layerRuleSummary;
@@ -251,7 +250,7 @@
       stage('exporting','Preparing the checked preview and downloadable results.',{},writeLog);
       await yieldTask();
       return measured('exporting',()=>({board:result,preview:geometry(result,prepared?.connection),stats:finalStats,advice,fromInput,
-        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.17',settings:options,routingRules:{shorterNets:result.nets.filter(net=>net.preferShort).map(net=>net.name),padEscapeNets:result.nets.filter(net=>net.allowPadEscape).map(net=>net.name)},units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}}));
+        exports:{ses:dsn.exportSes(result,name),dsn:dsn.exportDsn(result,name),report:JSON.stringify({engine:'Ramen JS 0.2.18',settings:options,routingRules:{shorterNets:result.nets.filter(net=>net.preferShort).map(net=>net.name)},units:result.units,bounds:result.bounds,viaInPadApplied:!!result.viaInPadApplied,sesExport:dsn.exportSesReport(result),initialStats,stats:finalStats,checks:report,advice},null,2)}}));
     }
     self.onmessage=async event=>{
       const m=event.data;
@@ -261,11 +260,16 @@
       if(!['inspect','run','clear','layer-rules'].includes(m.type)) return;
       try {
         cancelled=false;deadline=Number.isFinite(m.deadlineAt)?m.deadlineAt:Date.now()+(m.options?.timeoutMinutes||30)*60000;
-        managedBudget=m.type==='run';measurement=managedBudget?benchmark.createCollector({appVersion:'0.2.17',settings:m.options,environment:m.environment}):null;yieldTask.measurement=measurement;lastMeasurementAt=-Infinity;budgetGeneration=m.budgetGeneration||0;pauseRequested=false;pausedAt=null;pausedDurationMs=0;
-        if(measurement){const end=measurement.begin('fingerprinting');const boardFingerprint=await benchmark.fingerprint(m.text),workloadFingerprint=await benchmark.fingerprint(JSON.stringify({boardFingerprint,settings:benchmark.cleanSettings(m.options),appVersion:'0.2.17',protocol:m.options.benchmarkMode?'fixed-work-v1':'normal-v1'}));measurement.setFingerprints(boardFingerprint,workloadFingerprint);end();}
+        managedBudget=m.type==='run';measurement=managedBudget?benchmark.createCollector({appVersion:'0.2.18',settings:m.options,environment:m.environment}):null;yieldTask.measurement=measurement;lastMeasurementAt=-Infinity;budgetGeneration=m.budgetGeneration||0;pauseRequested=false;pausedAt=null;pausedDurationMs=0;
+        if(measurement){const end=measurement.begin('fingerprinting');const boardFingerprint=await benchmark.fingerprint(m.text),workloadFingerprint=await benchmark.fingerprint(JSON.stringify({boardFingerprint,settings:benchmark.cleanSettings(m.options),appVersion:'0.2.18',protocol:m.options.benchmarkMode?'fixed-work-v1':'normal-v1'}));measurement.setFingerprints(boardFingerprint,workloadFingerprint);end();}
         stage('reading','Reading the DSN board and its routing rules.');
         await yieldTask();
         const b=measured('reading',()=>dsn.parse(m.text,m.name));measurement?.setNets(b.nets);
+        // Apply the run's chosen policy before checking or saving its input fallback.
+        if(m.type==='run'&&typeof m.options.viaInPad==='boolean'){
+          b.viaAtSmd=m.options.viaInPad;for(const def of b.viaDefs)def.attachAllowed=m.options.viaInPad;
+          b.viaInPadApplied=m.options.viaInPad;b.viaInPadOverride=m.options.viaInPad;
+        }
         activityScale=b.units.mmPerUnit;activityNets=new Map(b.nets.map(net=>[net.id,net.name]));
         stage('checking','Loaded '+b.nets.length+' nets, '+b.pads.length+' pads and '+b.layers.length+' copper layers. Checking the input board.');
         await yieldTask();
@@ -295,12 +299,16 @@
         send({type:'loaded',...initialResult,advice:measured('advising',()=>placementAdvice(b,b,false)),checkpointAdvice:initialResult.advice,warnings:b.warnings||[],runReport:reportSnapshot('running',true)});
         await yieldTask();
         if(m.type==='inspect') {send({type:'ready'});return;}
+        if(m.options.viaInPad===false&&initial.viaInPadViolations){
+          const error=new Error('Existing vias inside SMD pads conflict with the current setting. Clear routing & start over, or enable Allow vias in SMD pads. Your existing copper has been kept.');
+          error.code='VIA_IN_PAD_CONFLICT';throw error;
+        }
         if(initial.inactiveLayerViolations) {
           const error=new Error(initial.inactiveLayerViolations+' imported trace(s) are outside their main routing layers and do not qualify as permitted short pad escapes. Clear routing & start over, or change the net routing rules before routing.');
           error.code='NET_LAYER_CONFLICT';throw error;
         }
-        // Capture the original permissions before routing. This only identifies
-        // relevant options; it does not predict that an override will succeed.
+        // Identify nets that might benefit from permitting in-pad vias.
+        // This does not predict that enabling the option will succeed.
         const padViaCandidates=m.options.viaInPad||m.options.fanoutOnly?new Set():restrictedSmdNets(b);
         let lastPreview=0;
         const out=await router.route(b,m.options,message=>{
@@ -394,7 +402,7 @@
         rememberChecked(m);ruleTransaction=null;kill();
         log('Routing rules updated. Existing input routing is retained. Start routing when ready.');
         if(job.layerRuleSummary.conflictingTraces)log(job.layerRuleSummary.conflictingTraces+' imported trace(s) use unselected layers without qualifying as permitted short pad escapes. Clear routing & start over, or change these rules.');
-        if(job.layerRuleSummary.inaccessiblePads)log(job.layerRuleSummary.inaccessiblePads+' pad(s) have no copper on a selected main routing layer. Allow pad escapes can reach a nearby outside-pad via where legal; otherwise revise the selected layers or permitted via rules.');
+        if(job.layerRuleSummary.inaccessiblePads)log(job.layerRuleSummary.inaccessiblePads+' pad(s) have no copper on a selected main routing layer. The router will try short automatic escapes to nearby outside-pad vias; revise the selected layers if no legal access is available.');
         for(const warning of m.warnings||[])log('Input note: '+warning);
         notify();return;
       }
@@ -426,7 +434,7 @@
       if(m.phase)job.phase=m.phase;
       if(m.pass!==undefined&&!job.counters)job.pass=m.pass;
       if(m.type==='loaded') {
-        if(importedNetRules===null)importedNetRules=Object.fromEntries(netLayerSettings(board).nets.map(net=>[net.id,{layers:net.allowedLayers.slice(),preferShort:net.preferShort,allowPadEscape:net.allowPadEscape}]));
+        if(importedNetRules===null)importedNetRules=Object.fromEntries(netLayerSettings(board).nets.map(net=>[net.id,{layers:net.allowedLayers.slice(),preferShort:net.preferShort}]));
         updateLayerRules();
         job.initialStats=m.stats;
         rememberChecked({...m,advice:m.checkpointAdvice||m.advice});
@@ -443,7 +451,7 @@
         log('Checked result: '+job.stats.unrouted+' incomplete, '+(job.stats.totalViolations??job.stats.clearanceViolations)+' rule issues, '+job.stats.belowNominalWidthTraceCount+' undersized traces.');
         kill();
       }
-      if(m.type==='error') {freezeRunReport('error');if(m.code==='NET_LAYER_CONFLICT'&&bestChecked?.fromInput){board=bestChecked.board;preview=bestChecked.preview;exports=bestChecked.exports;job.stats={...bestChecked.stats};job.routingSummary=routingSummary(board);updateLayerRules();job.advice=bestChecked.advice;job.hasOutput=true;job.revision++;}job.state='error';job.phase='error';job.error=m.error;job.endedAt=Date.now();log('Error: '+m.error);if(m.stack)log(m.stack);kill();}
+      if(m.type==='error') {freezeRunReport('error');if(['NET_LAYER_CONFLICT','VIA_IN_PAD_CONFLICT'].includes(m.code)&&bestChecked?.fromInput){board=bestChecked.board;preview=bestChecked.preview;exports=bestChecked.exports;job.stats={...bestChecked.stats};job.routingSummary=routingSummary(board);updateLayerRules();job.advice=bestChecked.advice;job.hasOutput=true;job.revision++;}job.state='error';job.phase='error';job.error=m.error;job.endedAt=Date.now();log('Error: '+m.error);if(m.stack)log(m.stack);kill();}
       notify();
     };
     worker.onerror=e=>{if(id!==serial||!job||!active.has(job.state))return;const message=e.message||'Browser worker failed to start. Use a current Chrome, Edge or Firefox browser.';if(clearing){restoreBeforeClear('Routing could not be cleared: '+message,message);return;}if(editingRules){restoreBeforeRules('Routing rules could not be updated: '+message,message);return;}freezeRunReport('error');job.error=message;job.state='error';job.phase='error';job.endedAt=Date.now();log(job.error);kill();notify();};
@@ -486,10 +494,9 @@
         if(!change||!Number.isInteger(change.netId)||!nets.has(change.netId))throw new Error('A selected net is unknown. Reload the routing rules.');
         if(seen.has(change.netId))throw new Error('Each net may only be changed once.');
         seen.add(change.netId);
-        const hasLayers=Object.prototype.hasOwnProperty.call(change,'layers'),hasShort=Object.prototype.hasOwnProperty.call(change,'preferShort'),hasEscape=Object.prototype.hasOwnProperty.call(change,'allowPadEscape');
-        if(!hasLayers&&!hasShort&&!hasEscape)throw new Error('Choose a routing rule to change.');
+        const hasLayers=Object.prototype.hasOwnProperty.call(change,'layers'),hasShort=Object.prototype.hasOwnProperty.call(change,'preferShort');
+        if(!hasLayers&&!hasShort)throw new Error('Choose a routing rule to change.');
         if(hasShort&&typeof change.preferShort!=='boolean')throw new Error('The shorter-route preference must be true or false.');
-        if(hasEscape&&typeof change.allowPadEscape!=='boolean')throw new Error('The pad-escape permission must be true or false.');
         if(hasLayers) {
           if(!Array.isArray(change.layers)||!change.layers.length)throw new Error('Every net needs at least one allowed layer.');
           if(change.layers.some(layer=>!Number.isInteger(layer)||!layerIds.has(layer)))throw new Error('Choose only existing copper layers.');
@@ -497,8 +504,9 @@
         }
       }
       const changes=data.changes.filter(change=>{const current=nets.get(change.netId);return (Object.prototype.hasOwnProperty.call(change,'layers')&&(current.allowedLayers.length!==change.layers.length||current.allowedLayers.some(layer=>!change.layers.includes(layer))))||
-        (Object.prototype.hasOwnProperty.call(change,'preferShort')&&current.preferShort!==change.preferShort)||
-        (Object.prototype.hasOwnProperty.call(change,'allowPadEscape')&&current.allowPadEscape!==change.allowPadEscape);});
+        (Object.prototype.hasOwnProperty.call(change,'preferShort')&&current.preferShort!==change.preferShort);}).map(change=>({netId:change.netId,
+          ...(Object.prototype.hasOwnProperty.call(change,'layers')?{layers:change.layers}:{}),
+          ...(Object.prototype.hasOwnProperty.call(change,'preferShort')?{preferShort:change.preferShort}:{})}));
       if(!changes.length)return state();
       log('Updating routing rules. The board will return to its input routing.');
       return launch('layer-rules',getSettings(job.settings),changes);

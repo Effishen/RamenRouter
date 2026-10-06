@@ -26,7 +26,7 @@
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M5 20h30c-1 10-7 15-15 15S6 30 5 20Zm6 15h18M10 7v5h8v8m9-16v8h-4v8M4 15h13M25 15h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="5" r="2" fill="currentColor"/><circle cx="27" cy="3" r="2" fill="currentColor"/></svg>
       <span>Ramen<span class="brand-light">Router</span><span class="brand-caption">PCB ROUTING WORKBENCH</span></span>
     </div>
-    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.17</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
+    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.18</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
     <div class="connection" id="connection"><span class="status-dot"></span><span id="connectionText">Starting browser engine</span></div>
     <button class="icon-button help-button" id="helpButton" title="About this workbench" aria-label="About this workbench">?</button>
   </header>
@@ -131,7 +131,7 @@
       <div class="section-rule"></div>
       <div class="section-kicker">VISIBLE LAYERS <span id="layerCount" class="muted-count">0</span></div>
       <div id="layersList" class="layers-list"><p class="muted-empty">Board layers appear after import.</p></div>
-      <div class="view-options"><label class="checkbox-row view-option"><input type="checkbox" id="showPads" checked><span>Pads & vias</span></label><label class="checkbox-row view-option"><input type="checkbox" id="showAirwires" checked><span>Airwires</span></label><label class="checkbox-row view-option"><input type="checkbox" id="showLiveWork" checked><span>Live work</span></label></div>
+      <div class="view-options"><label class="checkbox-row view-option"><input type="checkbox" id="showPads" checked><span>Pads & vias</span></label><label class="checkbox-row view-option"><input type="checkbox" id="showAirwires" title="Guide lines between pad groups that still need a connection" checked><span>Airwires</span></label><label class="checkbox-row view-option"><input type="checkbox" id="showLiveWork" checked><span>Live work</span></label></div>
       </div>
       <div class="export-controls">
       <div class="section-kicker">EXPORT RESULTS</div>
@@ -140,7 +140,7 @@
       <div class="secondary-downloads"><button id="downloadDsn" class="text-button" disabled>Routed DSN <span aria-hidden="true">↓</span></button><button id="downloadChecks" class="text-button" disabled>Check report <span aria-hidden="true">↓</span></button><button id="downloadLog" class="text-button" disabled>Engine log <span aria-hidden="true">↓</span></button></div>
       <button id="runReportButton" class="run-report-button" type="button" aria-haspopup="dialog" hidden>Run report <span aria-hidden="true">↗</span></button>
       <p class="export-note">Check clearances, connectivity and design rules in your PCB editor before manufacturing.</p>
-      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.17</span><span>Independent browser engine · GPL-3.0</span></div>
+      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.18</span><span>Independent browser engine · GPL-3.0</span></div>
       </div>
     </aside>
   </main>
@@ -172,7 +172,7 @@
       <form id="settingsForm">
         <div class="setting-block fanout-setting">
           <label class="switch-row" for="fanout"><span><strong>Ramen SMD escape</strong></span><span class="switch"><input type="checkbox" id="fanout" name="fanout" checked><span class="switch-track"></span></span></label>
-          <p>Prepare extra pad escapes around surface-mount components. Per-net Allow pad escapes can still create short connections to chosen main layers when this option is off.</p>
+          <p>Prepare extra pad escapes around surface-mount components. Short connections needed to reach chosen main routing layers are prepared automatically, even when this option is off.</p>
           <label class="checkbox-row fanout-only" id="fanoutOnlyRow" hidden><input type="checkbox" id="fanoutOnly" name="fanoutOnly"><span>Pad escapes only · skip routing</span></label>
         </div>
         <div class="setting-block optimize-setting"><label class="switch-row" for="optimize"><span><strong>Optimize after routing</strong></span><span class="switch"><input type="checkbox" id="optimize" name="optimize" checked><span class="switch-track"></span></span></label><p>Refine completed routes and reduce vias.</p></div>
@@ -180,14 +180,14 @@
         <div class="setting-block direction-setting"><label class="switch-row" for="preferredDirections"><span><strong>Prefer alternating layer directions</strong></span><span class="switch"><input type="checkbox" id="preferredDirections" name="preferredDirections"><span class="switch-track"></span></span></label><p>Favor vertical routes on one layer and horizontal routes on the next. Routes may bend or cross directions when needed; this is a preference, not a restriction.</p><p id="directionLayerPreview" class="direction-layer-preview"></p></div>
         <div class="setting-block benchmark-setting"><label class="switch-row" for="benchmarkMode"><span><strong>Fixed-work benchmark</strong></span><span class="switch"><input type="checkbox" id="benchmarkMode" name="benchmarkMode"><span class="switch-track"></span></span></label><p>Use fixed search-work limits for fairer comparisons between computers. Use the same board and routing rules on both. The time limit still pauses the run; extend it until the job finishes.</p></div>
         <details class="advanced-rules"><summary>Advanced rules <span>1 OPTION</span></summary>
-          <div class="setting-block via-in-pad-setting"><label class="switch-row" for="viaInPad"><span><strong>Override: allow vias in SMD pads</strong></span><span class="switch"><input type="checkbox" id="viaInPad" name="viaInPad"><span class="switch-track"></span></span></label><p>Changes the imported via-placement rule. Check fabrication suitability. Off preserves the input rule.</p></div>
+          <div class="setting-block via-in-pad-setting"><label class="switch-row" for="viaInPad"><span><strong>Allow vias in SMD pads</strong></span><span class="switch"><input type="checkbox" id="viaInPad" name="viaInPad"><span class="switch-track"></span></span></label><p>Off keeps vias outside SMD pads; short pad traces can reach them when a layer change is needed. On permits vias inside pads without requiring them. Check fabrication suitability before enabling.</p></div>
         </details>
         <p class="rule-policy"><span aria-hidden="true">✓</span> Imported net widths enforced</p>
         <div class="number-settings"><label for="maxPasses">Routing attempts <input type="number" id="maxPasses" name="maxPasses" min="1" max="100" step="1" value="12" required><span>Includes repairs and fresh starts</span></label><label for="timeoutMinutes">Time limit <div class="number-unit"><input type="number" id="timeoutMinutes" name="timeoutMinutes" min="1" max="1440" step="1" value="30" required><span>min</span></div><span>Entire job</span></label></div>
       </form>
     </section>
     <section id="netRulesPanel" role="tabpanel" aria-labelledby="netRulesTab" hidden>
-    <p id="netPadEscapeDescription"><strong>Layer checkboxes choose the main routing layers.</strong> Changing a layer selection turns on <strong>Allow pad escapes</strong> for that net. This permits a short, full-width connection on the pad layer to a nearby via outside the pad, then continues on a selected layer. These escapes still obey clearance and board rules. Turn pad escapes off to keep every trace on the selected layers. Imported layer rules stay strict unless this permission was saved in the DSN or you enable it here.</p>
+    <p id="netPadEscapeDescription"><strong>Layer checkboxes choose the main routing layers.</strong> When a pad is on another layer and vias inside SMD pads are off, the router tries a short, full-width trace to a nearby via outside the pad, then stays on the selected layers. Turn on the separate SMD-via option to permit vias inside pads. This access is automatic for imported and edited layer rules. With all layers selected, routing keeps its usual behavior. Clearances and other routing rules still apply.</p>
     <p id="netShortDescription"><strong>Prefer shorter routes</strong> gives selected nets earlier access to space and favors shorter paths, even if that needs more vias. Completing connections and obeying board rules come first. This does not guarantee the shortest possible path or match trace lengths.</p>
     <p class="net-layers-physical-note">Pads and through vias keep their physical layer spans. Selecting a layer here does not change the board’s construction.</p>
 
@@ -195,7 +195,7 @@
     <p class="net-layer-bulk-help" id="netLayerSearchHelp">Use <strong>*</strong> for any number of characters: <strong>USB*</strong> starts with USB, <strong>*CLK</strong> ends with CLK, <strong>*CLK*</strong> contains CLK. Plain text finds any part of a name.</p>
     <p class="net-layer-bulk-help" id="netLayerBulkHelp">Each header checkbox changes all shown nets. Filter by name to change only matching nets.</p>
     <p class="net-layer-count" id="netLayerCount" role="status" aria-live="polite"></p>
-    <div class="net-layer-table-scroll" tabindex="0" role="region" aria-label="Routing rules, scroll for more nets or columns"><table class="net-layer-table"><caption class="visually-hidden">Preferred shorter routes, pad escapes and main routing layers for each net</caption><thead id="netLayerHead"></thead><tbody id="netLayerRows"></tbody></table></div>
+    <div class="net-layer-table-scroll" tabindex="0" role="region" aria-label="Routing rules, scroll for more nets or columns"><table class="net-layer-table"><caption class="visually-hidden">Preferred shorter routes and main routing layers for each net</caption><thead id="netLayerHead"></thead><tbody id="netLayerRows"></tbody></table></div>
     <p class="net-layer-validation" id="netLayerValidation" role="status" aria-live="polite" hidden></p>
     <p class="net-layer-pad-warning" id="netLayerPadWarning" role="status" aria-live="polite" hidden></p>
     </section>

@@ -292,7 +292,7 @@ function createRamenGeometry(onActivity=null) {
     if(!board||!trace)return false;
     net=net||(board.nets||[]).find(item=>netKey(item.id)===netKey(trace.net));
     const layerIds=new Set((board.layers||[]).map((layer,i)=>layer.index??i)),selected=net?.useLayers||[...layerIds];
-    if(net?.allowPadEscape!==true||netKey(net.id)===null||netKey(net.id)!==netKey(trace.net)||!layerIds.has(trace.layer)||selected.includes(trace.layer)||!selected.some(layer=>layerIds.has(layer)))return false;
+    if(!net||netKey(net.id)===null||netKey(net.id)!==netKey(trace.net)||!layerIds.has(trace.layer)||selected.includes(trace.layer)||!selected.some(layer=>layerIds.has(layer)))return false;
     if(!Number.isFinite(trace.width)||trace.width<=0||Math.abs(trace.width-net.width)>EPS||!Array.isArray(trace.points)||trace.points.length<2||trace.points.some(p=>!Array.isArray(p)||p.length<2||!Number.isFinite(p[0])||!Number.isFinite(p[1])))return false;
     let length=0;for(let i=1;i<trace.points.length;i++)length+=distance(trace.points[i-1],trace.points[i]);
     if(!Number.isFinite(length)||length<=EPS)return false;

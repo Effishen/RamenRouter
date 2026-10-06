@@ -22,7 +22,7 @@ function createRamenFanout(geometry, yieldTask) {
     try{
     const clock=typeof yieldTask?.now==='function'?yieldTask.now:Date.now;
     const board=copy(input),log=[],started=clock(),deadline=yieldTask?.managesBudget?Infinity:started+(options.timeoutMinutes||30)*60000;
-    if(options.viaInPad){board.viaAtSmd=true;board.viaInPadApplied=true;for(const def of board.viaDefs)def.attachAllowed=true;}
+    if(typeof options.viaInPad==='boolean'){board.viaAtSmd=options.viaInPad;board.viaInPadApplied=options.viaInPad;board.viaInPadOverride=options.viaInPad;for(const def of board.viaDefs)def.attachAllowed=options.viaInPad;}
     const cancelled=()=>isCancelled()||clock()>deadline;
     let lastDetail=0;
     let lastSpatial=0,hasSpatial=false,visualCandidateId=0;
@@ -43,6 +43,7 @@ function createRamenFanout(geometry, yieldTask) {
     const padCounts=new Map(board.nets.map(n=>[n.id,board.pads.filter(p=>p.net===n.id).length]));
     const validate=()=>{const finish=measurement?.begin('checking');try{return G.validate(board);}finally{finish?.();}};
     const baseValidation=validate(),edges=G.boundaryEdges(board),primitives=G.copper(board).primitives;
+    if(options.viaInPad===false&&baseValidation.viaInPadViolations){const error=new Error('Existing vias overlap SMD pads while vias in SMD pads are disabled. Clear routing & start over, or enable vias in SMD pads before routing.');error.code='VIA_IN_PAD_CONFLICT';throw error;}
     const span=Math.max(board.bounds.maxX-board.bounds.minX,board.bounds.maxY-board.bounds.minY),cell=Math.max(span/60,.01);
     const indices=new Map(board.layers.map(l=>[l.index,G.spatialIndex([],cell)]));
     for(const p of primitives)indices.get(p.layer)?.insert(p);
@@ -54,7 +55,7 @@ function createRamenFanout(geometry, yieldTask) {
     }
     const shapes=board.pads.filter(p=>p.net&&new Set(p.shapes.map(s=>s.layer)).size===1&&padCounts.get(p.net)>1).map(p=>({pad:p,shape:p.shapes[0],geometry:axisFor(p.shapes[0]),net:nets.get(p.net)})).filter(p=>{
       const def=p.net&&defs.get(p.net.viaName);
-      return def&&traceLayers(p.net).some(l=>l!==p.shape.layer&&l>=def.fromLayer&&l<=def.toLayer)&&(!options.layerAccessOnly||p.net.allowPadEscape===true&&!traceLayers(p.net).includes(p.shape.layer));
+      return def&&traceLayers(p.net).some(l=>l!==p.shape.layer&&l>=def.fromLayer&&l<=def.toLayer)&&(!options.layerAccessOnly||!traceLayers(p.net).includes(p.shape.layer));
     });
     const allPadShapes=board.pads.flatMap(p=>p.shapes.map(s=>({pad:p,shape:s,box:G.shapeBounds(s)})));
     function sameNet(a,b){return a!=null&&a===b;}
@@ -88,7 +89,7 @@ function createRamenFanout(geometry, yieldTask) {
       if(dist(points[points.length-1],end)>EPS)points.push(end);
       const trace={net:net.id,layer,width:net.width,points,fixed:false,fanout:true};
       const via={x:end[0],y:end[1],net:net.id,padstack:def.name,diameter:def.diameter,layers:Array.from({length:def.toLayer-def.fromLayer+1},(_,i)=>def.fromLayer+i),fixed:false,fanout:true};
-      if(layer<def.fromLayer||layer>def.toLayer||points.length>1&&!traceLayers(net).includes(layer)&&net.allowPadEscape!==true)return null;
+      if(layer<def.fromLayer||layer>def.toLayer)return null;
       return {traces:points.length>1?[trace]:[],vias:[via],pads:[p.id]};
     }
     function commit(bundle){
@@ -98,7 +99,7 @@ function createRamenFanout(geometry, yieldTask) {
     }
     // A row is inferred from nearby, parallel elongated pads, never component IDs.
     const buckets=[];
-    for(const entry of shapes){if(!traceLayers(entry.net).includes(entry.shape.layer)&&entry.net.allowPadEscape!==true||!entry.geometry||entry.geometry.ratio<1.6)continue;
+    for(const entry of shapes){if(!entry.geometry||entry.geometry.ratio<1.6)continue;
       // Compare directions directly: angular rounding splits a 45-degree row
       // across adjacent bins when floating-point error straddles a bin edge.
       let bucket=buckets.find(b=>b.layer===entry.shape.layer&&dot(b.axis,entry.geometry.axis)>Math.cos(Math.PI/90));
@@ -216,7 +217,7 @@ function createRamenFanout(geometry, yieldTask) {
       let found=null;
       if(board.viaAtSmd&&defs.get(net.viaName).attachAllowed!==false){const b=bundleFor(entry,[p.x,p.y],[1,0],0);if(b&&legalBundle(b))found=b;}
       if(padLayerAllowed)for(const multiplier of [2,3,4,6,8,10]){if(found)break;for(const direction of directions){const end=[p.x+direction[0]*net.width*multiplier,p.y+direction[1]*net.width*multiplier],b=bundleFor(entry,end,direction,0);if(b&&legalBundle(b)){found=b;break;}}}
-      if(!padLayerAllowed&&net.allowPadEscape===true&&!found){
+      if(!padLayerAllowed&&!found){
         detail('Finding local access to main routing layers · '+net.name+' · '+p.id,{stage:'layer-access',netId:net.id,netName:net.name,padId:p.id},true);
         const def=defs.get(net.viaName),limit=G.padEscapeLimit(board,p,net,def),gap=Math.max(net.width*.05,EPS*10);
         // Only this finite local escape may leave the chosen routing layers.
