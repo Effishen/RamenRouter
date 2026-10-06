@@ -16,6 +16,7 @@
   <script src="scripts/router.js" defer></script>
   <script src="scripts/advisor.js" defer></script>
   <script src="scripts/benchmark.js" defer></script>
+  <script src="scripts/rule-memory.js" defer></script>
   <script src="scripts/native-api.js" defer></script>
   <script src="scripts/app.js" defer></script>
 </head>
@@ -26,7 +27,7 @@
       <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M5 20h30c-1 10-7 15-15 15S6 30 5 20Zm6 15h18M10 7v5h8v8m9-16v8h-4v8M4 15h13M25 15h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="5" r="2" fill="currentColor"/><circle cx="27" cy="3" r="2" fill="currentColor"/></svg>
       <span>Ramen<span class="brand-light">Router</span><span class="brand-caption">PCB ROUTING WORKBENCH</span></span>
     </div>
-    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.18</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
+    <div class="header-engine"><span class="tiny-label">BROWSER ENGINE</span><strong id="engineVersion">Ramen JS 0.2.19</strong><span class="engine-divider"></span><span class="header-tag">PORTABLE / OFFLINE</span></div>
     <div class="connection" id="connection"><span class="status-dot"></span><span id="connectionText">Starting browser engine</span></div>
     <button class="icon-button help-button" id="helpButton" title="About this workbench" aria-label="About this workbench">?</button>
   </header>
@@ -140,7 +141,7 @@
       <div class="secondary-downloads"><button id="downloadDsn" class="text-button" disabled>Routed DSN <span aria-hidden="true">↓</span></button><button id="downloadChecks" class="text-button" disabled>Check report <span aria-hidden="true">↓</span></button><button id="downloadLog" class="text-button" disabled>Engine log <span aria-hidden="true">↓</span></button></div>
       <button id="runReportButton" class="run-report-button" type="button" aria-haspopup="dialog" hidden>Run report <span aria-hidden="true">↗</span></button>
       <p class="export-note">Check clearances, connectivity and design rules in your PCB editor before manufacturing.</p>
-      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.18</span><span>Independent browser engine · GPL-3.0</span></div>
+      <div class="inspector-foot">RamenRouter <span id="appVersion">0.2.19</span><span>Independent browser engine · GPL-3.0</span></div>
       </div>
     </aside>
   </main>
@@ -162,6 +163,16 @@
     <section class="report-section report-share" aria-labelledby="reportShareTitle"><h3 id="reportShareTitle">Compare your computers</h3><label for="reportDeviceLabel">Name this computer <input id="reportDeviceLabel" type="text" maxlength="80" placeholder="e.g. Desktop or travel laptop" autocomplete="off"></label><p class="report-note">Exports include timings, counts, settings, browser details and board fingerprints. They do not include board geometry, file names or net names. The computer name is your own label.</p><div class="report-actions"><button id="exportBenchmark" type="button">Export benchmark</button><button id="compareBenchmarkButton" type="button">Compare benchmark…</button><input id="benchmarkFileInput" type="file" accept=".json,application/json" hidden></div><p id="benchmarkImportError" class="report-error" role="alert" hidden></p></section>
     <section id="benchmarkCompareSection" class="report-section" aria-labelledby="benchmarkCompareTitle" hidden><div class="report-compare-heading"><h3 id="benchmarkCompareTitle">Benchmark comparison</h3><button id="clearBenchmarkComparison" type="button">Clear comparison</button></div><p id="benchmarkCompareStatus" class="report-comparison-status" role="status"></p><div class="report-table-scroll"><table id="benchmarkCompareTable" class="report-table"></table></div><p class="report-note">This compares RamenRouter in these browsers, primarily on one routing worker. Power settings, other applications and browser versions can affect the times. Repeat runs for a more reliable comparison.</p></section>
     <div class="report-footer"><button id="closeRunReportBottom" type="button">Back to the board</button></div>
+  </dialog>
+  <dialog id="previousRulesDialog" class="previous-rules-dialog" aria-labelledby="previousRulesTitle" aria-describedby="previousRulesCount previousRulesDescription">
+    <div class="dialog-header"><span class="section-kicker">MATCHING BOARD</span><button id="closePreviousRules" class="icon-button" type="button" aria-label="Use imported rules and close">×</button></div>
+    <h2 id="previousRulesTitle">Reuse previous routing rules?</h2>
+    <p id="previousRulesCount"></p>
+    <dl class="previous-rules-files"><div><dt>Previous board</dt><dd id="previousRulesOldName"></dd></div><div><dt>New import</dt><dd id="previousRulesNewName"></dd></div></dl>
+    <p id="previousRulesDescription">Reuse your selected main layers and <strong>Prefer shorter routes</strong> choices for matching nets. The layout, traces, vias and other board rules come from the new file. Global routing options stay as you set them.</p>
+    <p class="previous-rules-note">Use imported rules to keep this file's own choices. Closing this dialog or pressing Escape does the same.</p>
+    <p id="previousRulesError" class="previous-rules-error" role="alert" hidden></p>
+    <div class="previous-rules-actions"><button id="previousRulesImported" type="button">Use imported rules</button><button id="previousRulesReuse" type="button">Reuse previous rules</button></div>
   </dialog>
   <dialog id="netLayersDialog" class="net-layers-dialog" aria-labelledby="netLayersTitle" aria-describedby="netLayersDescription netLayersApplyNote">
     <div class="dialog-header"><span class="section-kicker">ROUTING RULES</span><button id="closeNetLayers" class="icon-button" type="button" aria-label="Cancel routing rule changes">×</button></div>

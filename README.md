@@ -105,6 +105,24 @@ Every route still follows clearances, widths and the other routing rules.
 imported file. These choices affect routing; the preview's **Visible layers**
 controls only change what you see.
 
+When you import another revision of a similar board, RamenRouter can offer
+**Reuse previous routing rules?** It checks that the net names and connected
+pins match, and that the layer names and order are compatible. The prompt
+shows the previous and new filenames and how many nets have different choices.
+
+Choose **Reuse previous rules** to carry over the selected main layers and
+**Prefer shorter routes** choices. The new file supplies its own layout,
+traces, vias, widths and other board rules. Choose **Use imported rules**, close
+the dialog or press Escape to keep the new file's rules instead. Routing waits
+for your choice. Reused rules are checked before they are committed; if that
+fails, the new input is kept and you can retry or use its imported rules.
+
+The latest board's net choices are remembered in this browser, including
+across page refreshes when local storage is available. If saving is blocked,
+they remain available during this page session. Only the matching information,
+filename and per-net choices are remembered; board geometry and copper are not
+stored. Nothing is uploaded, and this does not save the routed result.
+
 Enable **Prefer shorter routes** for nets where length matters. RamenRouter
 gives these nets earlier routing priority and favours shorter paths, even
 when that needs more vias. With **Smart search**, it can keep looking for a

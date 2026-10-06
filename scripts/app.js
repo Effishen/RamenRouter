@@ -37,6 +37,9 @@
   let netShortDrafts = new Map();
   let routingOptionsBeforeDialog = null;
   let pendingRoutingOptions = null;
+  let previousRulesDialogKey = null;
+  let previousRulesAction = null;
+  let previousRulesError = '';
   let dismissedDirectionJobId = null;
   const acknowledgedAttention = new Set();
   let activeAttentionKey = null;
@@ -116,27 +119,77 @@
     return Boolean(output);
   }
 
+  function hasPreviousRulesDecision() { return Boolean(currentState?.job?.previousRulesProposal); }
+
+  function updatePreviousRulesPrompt() {
+    const job = currentState?.job, proposal = job?.previousRulesProposal;
+    const dialog = $('previousRulesDialog');
+    if (!proposal || job.state !== 'ready' || isActive()) {
+      if (dialog.open) dialog.close();
+      if (!proposal) { previousRulesDialogKey = null; previousRulesError = ''; }
+      return;
+    }
+    const key = `${job.id}:${proposal.id}`;
+    if (previousRulesDialogKey !== key) {
+      previousRulesDialogKey = key;
+      previousRulesError = '';
+    }
+    $('previousRulesOldName').textContent = proposal.previousName || 'Previous board';
+    $('previousRulesNewName').textContent = proposal.currentName || 'Imported board';
+    $('previousRulesCount').textContent = `${number(proposal.changedNets)} matching ${proposal.changedNets === 1 ? 'net has' : 'nets have'} different saved layer or shorter-route choices.`;
+    const error = previousRulesError || job.ruleError;
+    $('previousRulesError').hidden = !error;
+    $('previousRulesError').textContent = error ? `Previous rules have not been applied. ${error}` : '';
+    const waiting = Boolean(previousRulesAction);
+    dialog.setAttribute('aria-busy', String(waiting));
+    for (const id of ['previousRulesReuse', 'previousRulesImported', 'closePreviousRules']) $(id).disabled = !connected || busy || waiting;
+    $('previousRulesReuse').textContent = previousRulesAction === 'reuse' ? 'Applying rules…' : 'Reuse previous rules';
+    $('previousRulesImported').textContent = previousRulesAction === 'imported' ? 'Keeping imported rules…' : 'Use imported rules';
+    if (!dialog.open && !busy && !waiting && connected && !document.querySelector('dialog[open]')) {
+      dialog.showModal();
+      $('previousRulesImported').focus();
+    }
+  }
+
+  async function choosePreviousRules(reuse) {
+    const job = currentState?.job, proposal = job?.previousRulesProposal;
+    if (!proposal || job.state !== 'ready' || busy || previousRulesAction || !connected || isActive()) return;
+    previousRulesAction = reuse ? 'reuse' : 'imported';
+    previousRulesError = ''; busy = true; updateControls();
+    try {
+      const state = await api('/api/reuse-routing-rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jobId: job.id, proposalId: proposal.id, reuse }) });
+      if (!state?.job) throw new Error('The engine did not confirm your choice. Please try again.');
+      applyState(state);
+      if (!state.job.previousRulesProposal) $('previousRulesDialog').close();
+      toast(reuse ? 'Reusing previous routing rules. Checking the new board…' : 'Using the routing rules from your imported board.');
+    } catch (error) {
+      if (currentState?.job?.id === job.id && currentState.job.previousRulesProposal?.id === proposal.id) previousRulesError = error.message || String(error);
+      else toast(error.message || String(error), true);
+    } finally { previousRulesAction = null; busy = false; updateControls(); }
+  }
+
   function updateControls() {
     const job = currentState?.job;
     const active = isActive();
     const available = connected && !busy;
+    const previousRulesPending = hasPreviousRulesDecision();
     const stopping = job?.state === 'stopping';
     $('runButton').hidden = active;
     $('stopButton').hidden = !active;
-    $('runButton').disabled = !available || !job || job.state === 'idle' || active;
+    $('runButton').disabled = !available || !job || job.state === 'idle' || active || previousRulesPending;
     $('stopButton').disabled = !available || stopping;
     $('stopButton').lastChild.textContent = stopping ? ' Stopping…' : 'Stop job';
     $('forceStopButton').hidden = !stopping || !stoppingSince || Date.now() - stoppingSince < 5000;
     $('forceStopButton').disabled = !available || forcedStop;
-    for (const id of ['dropzone', 'replaceButton', 'demoButton']) $(id).disabled = !available || active;
+    for (const id of ['dropzone', 'replaceButton', 'demoButton']) $(id).disabled = !available || active || previousRulesPending;
     const routing = job?.routingSummary;
     $('clearRoutingButton').hidden = !job || job.state === 'idle';
-    $('clearRoutingButton').disabled = !available || active || !routing || routing.traceCount + routing.viaCount === 0;
+    $('clearRoutingButton').disabled = !available || active || previousRulesPending || !routing || routing.traceCount + routing.viaCount === 0;
     $('clearRoutingButton').title = routing && routing.traceCount + routing.viaCount === 0 ? 'There are no traces or routing vias to clear.' : 'Remove all traces and routing vias from the loaded board.';
     $('confirmClearRouting').disabled = !available || active || job?.id !== clearRoutingJobId;
     if ($('clearRoutingDialog').open && (job?.id !== clearRoutingJobId || active)) $('clearRoutingDialog').close();
     $('netLayersSetting').hidden = !job || job.state === 'idle';
-    $('netLayersButton').disabled = !available || active;
+    $('netLayersButton').disabled = !available || active || previousRulesPending;
     $('cancelNetLayers').disabled = busy;
     $('closeNetLayers').disabled = busy;
     if ($('netLayersDialog').open && (job?.id !== netLayersData?.jobId || active)) { discardRoutingRuleDraft(); $('netLayersDialog').close(); }
@@ -171,6 +224,7 @@
     if (job?.state === 'clearing') hint = 'Removing routes and checking your board…';
     if (job?.state === 'updating_rules') hint = 'Applying net layers and checking your input board…';
     if (busy) hint = 'Preparing your board…';
+    if (previousRulesPending) hint = 'Choose whether to reuse your previous routing rules before starting.';
     if (stopping) hint = forcedStop ? 'Force stop requested.' : 'Finishing the current operation…';
     if (awaitingMoreTime(job)) hint = job.state === 'paused' ? 'Extend the time to continue this run, or stop.' : 'Reaching a safe pause point. You can extend now.';
     if (!connected) hint = 'Waiting for the browser engine.';
@@ -183,6 +237,7 @@
     updatePlacementAdvice();
     updateExportAttention();
     updateRunReportControls();
+    updatePreviousRulesPrompt();
     updateAttention();
   }
 
@@ -1323,7 +1378,7 @@
   function saveSettings(settings = readRoutingOptions()) { try { localStorage.setItem('ramenrouter.browser.settings.v1', JSON.stringify(settings)); } catch {} }
 
   async function startRouting(enableViaInPad = false, relaxDirections = false) {
-    if (busy || isActive() || !connected || $('netLayersDialog').open || !$('settingsForm').checkValidity()) return;
+    if (busy || isActive() || hasPreviousRulesDecision() || !connected || $('netLayersDialog').open || !$('settingsForm').checkValidity()) return;
     if (enableViaInPad) {
       if (!canSuggestViaInPad()) return;
       $('viaInPad').checked = true;
@@ -1350,7 +1405,7 @@
 
   function openClearRouting() {
     const job = currentState?.job, routing = job?.routingSummary;
-    if (!connected || busy || isActive() || !routing || routing.traceCount + routing.viaCount === 0) return;
+    if (!connected || busy || isActive() || hasPreviousRulesDecision() || !routing || routing.traceCount + routing.viaCount === 0) return;
     clearRoutingJobId = job.id;
     $('clearRoutingFileName').textContent = job.name || 'Untitled board';
     const count = (value, singular, plural) => `${number(value)} ${value === 1 ? singular : plural}`;
@@ -1564,7 +1619,7 @@
 
   async function openNetLayers() {
     const jobId = currentState?.job?.id;
-    if (!jobId || !connected || busy || isActive()) return;
+    if (!jobId || !connected || busy || isActive() || hasPreviousRulesDecision()) return;
     busy = true; updateControls();
     try {
       const data = await api('/api/routing-rules');
@@ -1609,7 +1664,9 @@
   }
 
   async function upload(file) {
-    if (!file || busy || isActive() || !connected) return;
+    if (!file) return;
+    if (hasPreviousRulesDecision()) { $('fileInput').value = ''; toast('Choose whether to reuse the previous rules first.'); return; }
+    if (busy || isActive() || !connected) return;
     if (!/\.dsn$/i.test(file.name)) { toast('Choose a Specctra .dsn file exported from your PCB editor.', true); return; }
     if (file.size === 0) { toast('This file is empty. Export a new DSN from your PCB editor.', true); return; }
     busy = true; updateControls(); $('boardBusy').hidden = false;
@@ -1852,6 +1909,11 @@
     finally { $('benchmarkFileInput').value = ''; }
   }
 
+  $('previousRulesReuse').addEventListener('click', () => void choosePreviousRules(true));
+  $('previousRulesImported').addEventListener('click', () => void choosePreviousRules(false));
+  $('closePreviousRules').addEventListener('click', () => void choosePreviousRules(false));
+  $('previousRulesDialog').addEventListener('cancel', event => { event.preventDefault(); if (!previousRulesAction) void choosePreviousRules(false); });
+  for (const id of ['aboutDialog', 'runReportDialog', 'clearRoutingDialog']) $(id).addEventListener('close', updateControls);
   $('runReportButton').addEventListener('click', openRunReport);
   $('closeRunReport').addEventListener('click', () => $('runReportDialog').close());
   $('closeRunReportBottom').addEventListener('click', () => $('runReportDialog').close());
@@ -1893,12 +1955,12 @@
   });
   $('fileInput').addEventListener('change', event => void upload(event.target.files[0]));
   for (const eventName of ['dragenter', 'dragover']) document.addEventListener(eventName, event => {
-    event.preventDefault(); if (connected && !isActive() && !busy) $('dropzone').classList.add('drag-over');
+    event.preventDefault(); if (connected && !isActive() && !busy && !hasPreviousRulesDecision()) $('dropzone').classList.add('drag-over');
   });
   document.addEventListener('dragleave', event => { if (!event.relatedTarget) $('dropzone').classList.remove('drag-over'); });
   document.addEventListener('drop', event => { event.preventDefault(); $('dropzone').classList.remove('drag-over'); void upload(event.dataTransfer?.files[0]); });
   $('demoButton').addEventListener('click', async () => {
-    if (busy || isActive()) return;
+    if (busy || isActive() || hasPreviousRulesDecision()) return;
     acknowledgeAttention();
     busy = true; updateControls();
     try { await post('/api/demo'); toast('Example board loaded. Choose your settings to try the engine.'); }
@@ -1976,7 +2038,7 @@
   canvas.addEventListener('pointerleave', () => { $('cursorPosition').textContent = 'Drag to pan · scroll to zoom'; });
   canvas.addEventListener('dblclick', fitBoard);
   document.addEventListener('keydown', event => {
-    if (event.target.matches('input,textarea,select') || $('aboutDialog').open || $('clearRoutingDialog').open || $('netLayersDialog').open || $('runReportDialog').open || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (event.target.matches('input,textarea,select') || $('aboutDialog').open || $('clearRoutingDialog').open || $('netLayersDialog').open || $('runReportDialog').open || $('previousRulesDialog').open || event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.key.toLowerCase() === 'f') { event.preventDefault(); fitBoard(); }
   });
   if (typeof nativeEngine?.subscribeActivity === 'function') nativeEngine.subscribeActivity(event => {

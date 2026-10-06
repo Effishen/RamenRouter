@@ -566,3 +566,18 @@ dialog p{font-size:16px;line-height:1.65}
 #reportEnvironment{overflow-wrap:anywhere}
 .run-report-dialog button:focus-visible,.run-report-dialog input:focus-visible,.run-report-dialog summary:focus-visible{outline:2px solid #a4e6cb;outline-offset:3px}
 @media(max-width:600px){.run-report-dialog{max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);padding:18px}.run-report-dialog h2{font-size:27px}.report-headlines{gap:9px}.report-headlines>div{padding:12px}.report-headlines span{font-size:14px}.report-headlines strong{font-size:23px}.report-headlines small{font-size:12px}.report-stage{grid-template-columns:minmax(95px,1fr) minmax(30px,1fr) 75px;gap:8px;font-size:13px}.report-stage>strong{font-size:12px}.report-details{padding:12px}.report-detail-stats{font-size:14px;gap:10px}.report-actions>button{flex:1}.report-table{min-width:460px}.report-progress-chart{padding:10px 3px 0}.report-progress-chart svg{min-height:160px}.report-progress-chart text{font-size:14px}.report-compare-heading{align-items:flex-start;flex-direction:column}}
+
+/* A previous board's net choices are reused only after an explicit decision. */
+.previous-rules-dialog{width:640px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);padding:24px 28px;overflow:auto}
+.previous-rules-dialog h2{font-size:28px;line-height:1.35;margin:17px 0 12px}
+.previous-rules-dialog p{font-size:16px;line-height:1.6;margin:12px 0}
+.previous-rules-files{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:20px 0}
+.previous-rules-files>div{min-width:0;padding:13px 14px;background:#183039;border:1px solid #3a5a65;border-radius:6px}
+.previous-rules-files dt{font-size:13px;color:#a3bec6;line-height:1.5}
+.previous-rules-files dd{margin:6px 0 0;font-size:16px;line-height:1.5;color:#d9eae7;overflow-wrap:anywhere}
+.previous-rules-dialog .previous-rules-note{font-size:14px;color:#a9c2c5}
+.previous-rules-dialog .previous-rules-error{padding:11px 13px;border:1px solid #885f51;border-radius:5px;background:#362722;color:#ffc0b3;font-size:15px;overflow-wrap:anywhere}
+.previous-rules-actions{display:flex;justify-content:flex-end;gap:12px;margin-top:23px}
+.previous-rules-actions button{min-height:46px;min-width:0;padding:11px 15px;border:1px solid #55776f;border-radius:6px;background:#203b34;color:#d5e9e0;font-size:16px;line-height:1.45}
+.previous-rules-actions button:last-child{background:var(--teal);border-color:#8ce9cd;color:#10382d;font-weight:600}
+@media(max-width:600px){.previous-rules-dialog{max-width:calc(100vw - 20px);max-height:calc(100dvh - 20px);padding:19px}.previous-rules-dialog h2{font-size:25px}.previous-rules-files{grid-template-columns:1fr}.previous-rules-actions{flex-direction:column-reverse}.previous-rules-actions button{width:100%}}
