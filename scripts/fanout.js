@@ -18,7 +18,7 @@ function createRamenFanout(geometry, yieldTask) {
     const candidatesByNet=measurement?new Map():null;
     let combinations=0;
     const flush=()=>{if(!measurement)return;for(const [netId,count]of candidatesByNet)measurement.count('fanoutCandidates',count,netId);candidatesByNet.clear();if(combinations){measurement.count('fanoutCombinations',combinations);combinations=0;}};
-    const connectivity=board=>{const finish=measurement?.begin('checking');try{return G.connectivity(board);}finally{finish?.();}};
+    const connectivity=board=>{const finish=measurement?.begin('checking');try{return G.connectivity(board,{airwires:false});}finally{finish?.();}};
     try{
     const clock=typeof yieldTask?.now==='function'?yieldTask.now:Date.now;
     const board=copy(input),log=[],started=clock(),deadline=yieldTask?.managesBudget?Infinity:started+(options.timeoutMinutes||30)*60000;

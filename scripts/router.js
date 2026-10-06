@@ -27,7 +27,7 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
   }
   async function route(input,options={},emit=()=>{},isCancelled=()=>false){
     const measurement=yieldTask?.measurement,finishRoute=measurement?.begin('routing');
-    const connectivity=board=>{const finish=measurement?.begin('checking');try{return G.connectivity(board);}finally{finish?.();}};
+    const connectivity=board=>{const finish=measurement?.begin('checking');try{return G.connectivity(board,{airwires:false});}finally{finish?.();}};
     try{
     const started=Date.now(),timeout=(options.timeoutMinutes||30)*60000,log=[];
     const stopped=()=>isCancelled()||(!yieldTask?.managesBudget&&Date.now()-started>=timeout);
@@ -253,6 +253,27 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
         }
         for(const anchor of anchors){let at=anchor.at,gx=Math.round((at[0]-bx)/step),gy=Math.round((at[1]-by)/step);for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){let x=gx+dx,y=gy+dy;if(x<0||x>=nx||y<0||y>=ny)continue;let id=idx(x,y,l),v=xy(id);if(allowed(c.base,id,net.id)&&(soft||allowed(c.dyn,id,net.id))&&staticSegmentClear(at,v,l,net,soft)){let bridge=anchor.bridge.concat([[v[0],v[1]]]),cost=length({points:bridge})+(via?searchViaCost(net):0);let old=seeds.get(id);if(!old||cost<old.cost)seeds.set(id,{point:p,bridge,cost,via});}}}
         }
+      }
+      // A legal pad can be narrower than the nominal trace, or nearby copper
+      // can block its centre while leaving another part of the pad accessible.
+      // Try a small, finite set of actual interior attachment points only when
+      // the ordinary centre and axis bridges supplied no usable grid seeds.
+      if(!seeds.size)for(const padId of group.pads||[]){
+        const pad=original.pads.find(item=>item.id===padId&&item.net===net.id);if(!pad)continue;
+        for(const shape of pad.shapes||[]){
+          const l=shape.layer;if(!layers.includes(l))continue;
+          const box=G.shapeBounds(shape),reach=Math.hypot(box.maxX-box.minX,box.maxY-box.minY)*2+net.width,origins=[];
+          for(const d of [[1,0],[-1,0],[0,1],[0,-1],[SQRT2/2,SQRT2/2],[-SQRT2/2,SQRT2/2],[SQRT2/2,-SQRT2/2],[-SQRT2/2,-SQRT2/2]]){
+            const edge=G.nearestPointOnShape(pad.x+d[0]*reach,pad.y+d[1]*reach,shape);
+            for(const fraction of [.5,.8]){const origin=[pad.x+(edge[0]-pad.x)*fraction,pad.y+(edge[1]-pad.y)*fraction];if(G.pointInShape(origin[0],origin[1],shape))origins.push(origin);}
+          }
+          for(const origin of origins){const gx=Math.round((origin[0]-bx)/step),gy=Math.round((origin[1]-by)/step);
+            for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const x=gx+dx,y=gy+dy;if(x<0||x>=nx||y<0||y>=ny)continue;
+              const id=idx(x,y,l),v=xy(id);if(!allowed(c.base,id,net.id)||!soft&&!allowed(c.dyn,id,net.id)||!staticSegmentClear(origin,v,l,net,soft))continue;
+              const bridge=[origin.slice(),v.slice(0,2)],cost=length({points:bridge}),old=seeds.get(id);if(!old||cost<old.cost)seeds.set(id,{point:[origin[0],origin[1],l],bridge,cost});
+            }
+          }
+        }
       }return seeds;
     }
     async function search(seeds,targets,net,c,soft=false,softPenalty=80){
@@ -336,7 +357,12 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
     }
 
     async function routeNet(net,softAllowed,keepExisting=false){measurement?.count('netAttempts',1,net.id);detail('Routing '+net.name+' · attempt '+(routeActivity.attempt||1),{stage:'net',netId:net.id,netName:net.name},finishing?'finishing':'routing');let c=await getRaster(net);if(stopped())return{failed:true,ripped:new Set()};let groups=(keepExisting?(connectivity(board).components.find(c=>c.net===net.id)?.groups||[]):(groupsByNet.get(net.id)||[])).filter(g=>g.points&&g.points.length&&(!inaccessibleGroups.has(net.id)||hasLayerAccess(g,net)));if(groups.length<=1)return{failed:false,ripped:new Set()};let ordered=groups.map(g=>({group:g,seeds:groupSeeds(g,net,c)}));ordered.sort((a,b)=>b.seeds.size-a.seeds.size);let root=ordered.shift(),targets=new Map(root.seeds),targetGroups=[root.group],remaining=ordered,ripped=new Set(),failed=false;
-      while(remaining.length&&!stopped()){let targetCoordinates=targets.size?[...targets.keys()].map(xy):targetGroups.flatMap(group=>group.points);remaining.sort((a,b)=>distanceToTree(a.group,targetCoordinates)-distanceToTree(b.group,targetCoordinates));let next=remaining.shift(),found=await search(next.seeds,targets,net,c,false);
+      // The route tree grows monotonically within this net attempt. Keep the
+      // exact nearest distance and compare only newly added points after each
+      // branch, rather than rescanning the full tree in every sort comparison.
+      let distanceTargets=targets.size?[...targets.keys()].map(xy):targetGroups.flatMap(group=>group.points);
+      for(const entry of remaining)entry.treeDistance=distanceToTree(entry.group,distanceTargets);
+      while(remaining.length&&!stopped()){remaining.sort((a,b)=>a.treeDistance-b.treeDistance);let next=remaining.shift(),found=await search(next.seeds,targets,net,c,false);
         if(!found&&softAllowed){
           // Generated routes can block the attachment bridge before A* starts.
           // Let soft search reach those endpoints, then rip every crossed net
@@ -356,7 +382,12 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
           c=await getRaster(net);
         }
         board.traces.push(...copper.traces);for(const v of copper.vias)if(!board.vias.some(w=>w.net===v.net&&Math.hypot(w.x-v.x,w.y-v.y)<EPS))board.vias.push(v);generation++;
-        targetGroups.push(next.group);for(const id of found.path)targets.set(id,xy(id));for(const [id,p]of next.seeds)targets.set(id,p);
+        const hadTargets=targets.size>0,addedTargets=[];
+        targetGroups.push(next.group);for(const id of found.path){const point=xy(id);if(!targets.has(id))addedTargets.push(point);targets.set(id,point);}for(const [id,p]of next.seeds){if(!targets.has(id))addedTargets.push(xy(id));targets.set(id,p);}
+        // A soft repair can create the first usable grid attachments. In that
+        // case the old fallback pad points are replaced, rather than retained.
+        if(!hadTargets&&targets.size){distanceTargets=[...targets.keys()].map(xy);for(const entry of remaining)entry.treeDistance=distanceToTree(entry.group,distanceTargets);}
+        else if(addedTargets.length)for(const entry of remaining)entry.treeDistance=Math.min(entry.treeDistance,distanceToTree(entry.group,addedTargets));
       }return{failed,ripped};}
     function distanceToTree(group,points){let best=Infinity;for(const p of group.points)for(const q of points)best=Math.min(best,Math.hypot(p[0]-q[0],p[1]-q[1]));return best;}
     function scoreBetter(a,b){if(a.totalViolations>baseTotal||a.clearanceViolations>baseViolation||a.belowNominalWidthTraceCount>baseWidth)return false;const key=s=>shortNets.size?[s.unrouted,s.totalViolations,s.belowNominalWidthTraceCount,s.preferredTraceLengthMm,s.viaCount,s.traceLengthMm]:[s.unrouted,s.viaCount,s.traceLengthMm];let ka=key(a),kb=key(b);for(let i=0;i<ka.length;i++){if(ka[i]<kb[i]-1e-8)return true;if(ka[i]>kb[i]+1e-8)return false;}return false;}

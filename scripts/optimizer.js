@@ -20,7 +20,7 @@ function createRamenOptimizer(geometry, yieldTask) {
     const flush=()=>{if(pendingCandidates){measurement?.count('refinementCandidates',pendingCandidates,candidateNet);pendingCandidates=0;}};
     const pause=()=>{flush();return wait();};
     const validate=board=>{const finish=measurement?.begin('checking');try{return G.validate(board);}finally{finish?.();}};
-    const connectivity=board=>{const finish=measurement?.begin('checking');try{return G.connectivity(board);}finally{finish?.();}};
+    const connectivity=board=>{const finish=measurement?.begin('checking');try{return G.connectivity(board,{airwires:false});}finally{finish?.();}};
     try{
     let lastDetail=0;
     let lastWork=0,workKind=null;

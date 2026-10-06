@@ -195,7 +195,7 @@ function createRamenGeometry(onActivity=null) {
     for(const p of primitives){if(!layers.has(p.layer))layers.set(p.layer,spatialIndex([],cellSize));layers.get(p.layer).insert(p);}
     return layers;
   }
-  function connectivity(board) {
+  function connectivity(board,options={}) {
     const activity=observesActivity?activityContext('connectivity'):null;
     const {objects,primitives}=copper(board),uf=unionFind(objects.length),layers=indexing(board,primitives);
     let primitiveCount=0;
@@ -214,7 +214,9 @@ function createRamenGeometry(onActivity=null) {
     const components=[],airwires=[];let unrouted=0;
     for(const [key,groupMap] of byNet){
       const groups=[...groupMap.values()];unrouted+=Math.max(0,groups.length-1);
-      if(groups.length>1){
+      // Internal checks need the exact copper groups and connection count,
+      // but do not need the visual minimum-spanning tree of airwires.
+      if(groups.length>1&&options.airwires!==false){
         const used=new Set([0]),best=new Array(groups.length).fill(null);
         function groupDistance(a,b){let closest={distance:Infinity,from:a.points[0]?.slice(0,2),to:b.points[0]?.slice(0,2)};
           for(const ap of a._primitives)for(const bp of b._primitives){

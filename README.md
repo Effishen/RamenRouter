@@ -101,6 +101,9 @@ The separate SMD-via option permits vias inside pads when enabled; it does
 not require them. With all layers selected, routing keeps its usual behavior.
 Every route still follows clearances, widths and the other routing rules.
 
+If a pad's centre is blocked, RamenRouter also looks for room to connect
+elsewhere inside that pad, keeping the requested trace width and clearance.
+
 **Reset** restores that net's layer and shorter-route choices from your
 imported file. These choices affect routing; the preview's **Visible layers**
 controls only change what you see.
