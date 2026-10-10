@@ -148,7 +148,7 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
       if(!soft)for(const p of getDynamicIndex()[layer].query(box)){if(p.net===net.id)continue;const clear=Math.max(clearanceOf(net),clearanceOf(rules.get(p.net)));if(G.distanceSegmentShape(a[0],a[1],b[0],b[1],p.shape)<half+clear-EPS)return false;}
       return true;
     }
-    let generation=0,board=copy(original),cache=null,finishing=false,repairRound=0;const ripHistory=new Map();
+    let generation=0,board=copy(original),cache=null,finishing=false,repairRound=0,congestionHistory=null;const ripHistory=new Map();
     const gCost=new Float64Array(total),visited=new Uint32Array(total),closed=new Uint32Array(total),parent=new Int32Array(total);let searchId=0;
     function eachCell(box,layer,fn){let x0=Math.max(0,Math.floor((box.minX-bx)/step)),x1=Math.min(nx-1,Math.ceil((box.maxX-bx)/step)),y0=Math.max(0,Math.floor((box.minY-by)/step)),y1=Math.min(ny-1,Math.ceil((box.maxY-by)/step));for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)fn(idx(x,y,layer),bx+x*step,by+y*step);}
     function put(arr,i,owner){owner=owner>0?owner:-1;if(!arr[i])arr[i]=owner;else if(arr[i]!==owner)arr[i]=-1;}
@@ -156,6 +156,24 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
     function drawSegment(arr,a,b,layer,r,owner){eachCell(expanded(bboxPoints([a,b]),r),layer,(i,x,y)=>{if(segmentDistance(x,y,a,b)<r+EPS)put(arr,i,owner);});}
     function drawTrace(arr,t,r,owner){spatial('Preparing trace clearance · '+(rules.get(t.net)?.name||'unconnected trace'),{stage:'trace-clearances',netId:t.net,netName:rules.get(t.net)?.name},()=>traceVisual([t],[],'trace','Current trace clearance'),finishing?'finishing':'rasterizing');for(let i=1;i<t.points.length;i++)drawSegment(arr,t.points[i-1],t.points[i],t.layer,r,owner);}
     function drawVia(arr,v,r,owner){spatial('Preparing via clearance · '+(rules.get(v.net)?.name||'unconnected via'),{stage:'via-clearances',netId:v.net,netName:rules.get(v.net)?.name},()=>({kind:'via',points:v.layers.slice(0,64).map(l=>[v.x,v.y,l]),label:'Current via clearance'}),finishing?'finishing':'rasterizing');for(const l of v.layers)eachCell({minX:v.x-r,minY:v.y-r,maxX:v.x+r,maxY:v.y+r},l,(i,x,y)=>{if(Math.hypot(x-v.x,y-v.y)<r+EPS)put(arr,i,owner);});}
+    async function rememberCongestion(blocked,net){
+      if(!congestionHistory)congestionHistory=new Uint8Array(total);
+      const mark=id=>{if(congestionHistory[id]<8)congestionHistory[id]++;};
+      let cells=0;
+      const region=async(box,layer,contains)=>{
+        const x0=Math.max(0,Math.floor((box.minX-bx)/step)),x1=Math.min(nx-1,Math.ceil((box.maxX-bx)/step)),y0=Math.max(0,Math.floor((box.minY-by)/step)),y1=Math.min(ny-1,Math.ceil((box.maxY-by)/step));
+        for(let y=y0;y<=y1;y++){
+          for(let x=x0;x<=x1;x++){if(contains(bx+x*step,by+y*step))mark(idx(x,y,layer));cells++;}
+          if(cells>=4096){cells=0;await yieldNow();if(stopped())return false;}
+        }
+        return !stopped();
+      };
+      for(const t of blocked.traces){const r=t.width/2+net.width/2+Math.max(clearanceOf(net),clearanceOf(rules.get(t.net)))+step;
+        for(let k=1;k<t.points.length;k++){const a=t.points[k-1],b=t.points[k];if(!await region(expanded(bboxPoints([a,b]),r),t.layer,(x,y)=>segmentDistance(x,y,a,b)<r+EPS))return false;}}
+      for(const v of blocked.vias){const r=v.diameter/2+net.width/2+Math.max(clearanceOf(net),clearanceOf(rules.get(v.net)))+step;
+        for(const layer of v.layers)if(!await region({minX:v.x-r,minY:v.y-r,maxX:v.x+r,maxY:v.y+r},layer,(x,y)=>Math.hypot(x-v.x,y-v.y)<r+EPS))return false;}
+      return !stopped();
+    }
     function allowed(arr,id,net){return arr[id]===0||arr[id]===net;}
     function inside(x,y,r){r+=original.edgeClearance||0;if(x<original.bounds.minX+r||x>original.bounds.maxX-r||y<original.bounds.minY+r||y>original.bounds.maxY-r)return false;if(original.outlines.length&&!original.outlines.some(p=>G.pointInPolygon(x,y,p)))return false;for(const hole of original.holes||[])if(G.pointInPolygon(x,y,hole))return false;for(const p of [...original.outlines,...(original.holes||[])])for(let k=0;k<p.length;k++)if(segmentDistance(x,y,p[k],p[(k+1)%p.length])<r-EPS)return false;return true;}
     async function getRaster(net){
@@ -233,10 +251,42 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
       }
       return {net:net.id,x:p[0],y:p[1],diameter:def.diameter,padstack:def.name,layers,fixed:false};
     }
-    function groupSeeds(group,net,c,soft=false){
+    function crossingWeight(owner){return (1+Math.min(10,(padCounts.get(owner)||6)/3))*(finishing?1+(ripHistory.get(owner)||0)*.4:1);}
+    function bridgePenalty(points,layer,net,c,softPenalty){
+      let cost=0;
+      for(let k=1;k<points.length;k++){
+        const a=points[k-1],b=points[k],distance=Math.hypot(b[0]-a[0],b[1]-a[1]);
+        if(distance<EPS)continue;
+        const samples=Math.max(1,Math.ceil(distance/(step*.5))),covered=distance/samples;
+        // Integrate occupied length, rather than charging each sample as a
+        // whole grid step. Shared long anchors are evaluated once below.
+        for(let i=0;i<samples;i++){
+          const fraction=(i+.5)/samples,x=Math.round((a[0]+(b[0]-a[0])*fraction-bx)/step),y=Math.round((a[1]+(b[1]-a[1])*fraction-by)/step);
+          if(x<0||x>=nx||y<0||y>=ny)continue;
+          const id=idx(x,y,layer),owner=c.dyn[id];
+          if(!allowed(c.dyn,id,net.id))cost+=covered*softPenalty*crossingWeight(owner);
+          if(finishing&&!preferShort(net)&&congestionHistory)cost+=covered*congestionHistory[id]*.35;
+        }
+      }
+      return cost;
+    }
+    function endpointViaPenalty(via,net,softPenalty){
+      if(!via)return 0;
+      for(const layer of via.layers){
+        const shape={type:'circle',cx:via.x,cy:via.y,r:via.diameter/2,layer};
+        for(const p of getDynamicIndex()[layer].query(G.shapeBounds(shape),maxClearance)){
+          if(p.net===net.id)continue;
+          const distance=G.distanceShapes(shape,p.shape),clearance=Math.max(clearanceOf(net),clearanceOf(rules.get(p.net)));
+          if(distance+EPS<clearance||distance<EPS)return 4*softPenalty*step;
+        }
+      }
+      return 0;
+    }
+    function groupSeeds(group,net,c,soft=false,softPenalty=80){
       let seeds=new Map(),points=group.points||[],layers=traceLayers(net);
       for(const p of points){spatial('Finding route attachment · '+net.name,{stage:'route-attachment',netId:net.id,netName:net.name},()=>({kind:'check',points:[p.slice(0,3)],label:'Current route attachment'}),finishing?'finishing':'routing');const padLayer=p[2]??0,via=layers.includes(padLayer)?null:endpointVia(p,net,c,soft);
         const sourceLayers=layers.includes(padLayer)?[padLayer]:via?layers.filter(l=>via.layers.includes(l)):[];
+        const viaCost=via?searchViaCost(net)+(soft?endpointViaPenalty(via,net,softPenalty):0):0;
         for(const l of sourceLayers){
         let anchors=[{at:[p[0],p[1],l],bridge:[[p[0],p[1]]]}];
         if(options.fanout!==false){
@@ -251,7 +301,7 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
             }
           }
         }
-        for(const anchor of anchors){let at=anchor.at,gx=Math.round((at[0]-bx)/step),gy=Math.round((at[1]-by)/step);for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){let x=gx+dx,y=gy+dy;if(x<0||x>=nx||y<0||y>=ny)continue;let id=idx(x,y,l),v=xy(id);if(allowed(c.base,id,net.id)&&(soft||allowed(c.dyn,id,net.id))&&staticSegmentClear(at,v,l,net,soft)){let bridge=anchor.bridge.concat([[v[0],v[1]]]),cost=length({points:bridge})+(via?searchViaCost(net):0);let old=seeds.get(id);if(!old||cost<old.cost)seeds.set(id,{point:p,bridge,cost,via});}}}
+        for(const anchor of anchors){let at=anchor.at,gx=Math.round((at[0]-bx)/step),gy=Math.round((at[1]-by)/step),anchorCost=length({points:anchor.bridge})+viaCost+(soft?bridgePenalty(anchor.bridge,l,net,c,softPenalty):0);for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){let x=gx+dx,y=gy+dy;if(x<0||x>=nx||y<0||y>=ny)continue;let id=idx(x,y,l),v=xy(id);if(allowed(c.base,id,net.id)&&(soft||allowed(c.dyn,id,net.id))&&staticSegmentClear(at,v,l,net,soft)){let connector=[[at[0],at[1]],[v[0],v[1]]],bridge=anchor.bridge.concat([[v[0],v[1]]]),cost=anchorCost+length({points:connector})+(soft?bridgePenalty(connector,l,net,c,softPenalty):0);let old=seeds.get(id);if(!old||cost<old.cost)seeds.set(id,{point:p,bridge,cost,via});}}}
         }
       }
       // A legal pad can be narrower than the nominal trace, or nearby copper
@@ -270,7 +320,7 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
           for(const origin of origins){const gx=Math.round((origin[0]-bx)/step),gy=Math.round((origin[1]-by)/step);
             for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const x=gx+dx,y=gy+dy;if(x<0||x>=nx||y<0||y>=ny)continue;
               const id=idx(x,y,l),v=xy(id);if(!allowed(c.base,id,net.id)||!soft&&!allowed(c.dyn,id,net.id)||!staticSegmentClear(origin,v,l,net,soft))continue;
-              const bridge=[origin.slice(),v.slice(0,2)],cost=length({points:bridge}),old=seeds.get(id);if(!old||cost<old.cost)seeds.set(id,{point:[origin[0],origin[1],l],bridge,cost});
+              const bridge=[origin.slice(),v.slice(0,2)],cost=length({points:bridge})+(soft?bridgePenalty(bridge,l,net,c,softPenalty):0),old=seeds.get(id);if(!old||cost<old.cost)seeds.set(id,{point:[origin[0],origin[1],l],bridge,cost});
             }
           }
         }
@@ -286,8 +336,9 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
       const flush=()=>{if(expanded!==reported){measurement?.count('gridPositions',expanded-reported,net.id);reported=expanded;}};
       try{
       let tag=++searchId;if(!tag){visited.fill(0);closed.fill(0);tag=++searchId;}
+      const evaluateGoal=soft||preferShort(net);
       let goalPoints=[...targets.keys()].map(xy),startPoint=xy(seeds.keys().next().value);
-      goalPoints.sort((a,b)=>Math.hypot(a[0]-startPoint[0],a[1]-startPoint[1])-Math.hypot(b[0]-startPoint[0],b[1]-startPoint[1]));if(!preferShort(net))goalPoints=goalPoints.slice(0,12);
+      if(!soft)goalPoints.sort((a,b)=>Math.hypot(a[0]-startPoint[0],a[1]-startPoint[1])-Math.hypot(b[0]-startPoint[0],b[1]-startPoint[1]));if(!evaluateGoal)goalPoints=goalPoints.slice(0,12);
       let goalBox=bboxPoints(goalPoints),heap=new Heap(),visitedCount=0,recentNodes=[],recentIndex=0;
       const heuristic=id=>{let p=xy(id),dx=Math.max(goalBox.minX-p[0],0,p[0]-goalBox.maxX)/step,dy=Math.max(goalBox.minY-p[1],0,p[1]-goalBox.maxY)/step;return Math.max(dx,dy)+(SQRT2-1)*Math.min(dx,dy);};
       const layers=traceLayers(net),viaCost=searchViaCost(net)/step;
@@ -295,8 +346,8 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
       const foundPath=id=>{let path=[];for(let p=id;p>=0;p=parent[p])path.push(p);path.reverse();return{path,seeds,targets};};
       for(const [id,seed]of seeds){visited[id]=tag;gCost[id]=(seed.cost||0)/step;parent[id]=-1;heap.push(id,gCost[id]+heuristic(id));}
       function relax(from,to,cost){if(closed[to]===tag)return;let g=gCost[from]+cost;if(visited[to]!==tag||g<gCost[to]){visited[to]=tag;gCost[to]=g;parent[to]=from;heap.push(to,g+heuristic(to));}}
-      while(heap.nodes.length){let entry=heap.pop(),id=entry[0];if(preferShort(net)&&bestGoal!==null&&entry[1]>=bestGoalCost-EPS)return foundPath(bestGoal);if(closed[id]===tag)continue;closed[id]=tag;expanded++;recentNodes[recentIndex++%64]=id;
-        if(targets.has(id)){if(!preferShort(net))return foundPath(id);const fullCost=gCost[id]+(targets.get(id).cost||0)/step;if(fullCost<bestGoalCost){bestGoal=id;bestGoalCost=fullCost;}}
+      while(heap.nodes.length){let entry=heap.pop(),id=entry[0];if(evaluateGoal&&bestGoal!==null&&entry[1]>=bestGoalCost-EPS)return foundPath(bestGoal);if(closed[id]===tag)continue;closed[id]=tag;expanded++;recentNodes[recentIndex++%64]=id;
+        if(targets.has(id)){if(!evaluateGoal)return foundPath(id);const fullCost=gCost[id]+(targets.get(id).cost||0)/step;if(fullCost<bestGoalCost){bestGoal=id;bestGoalCost=fullCost;}}
         if(++visitedCount%4096===0){flush();detail((soft?'Searching repair for ':'Searching ')+net.name+' · '+visitedCount.toLocaleString('en-US')+' grid positions explored',{stage:'search',netId:net.id,netName:net.name,expanded:visitedCount,repair:soft},finishing?'finishing':'routing');await yieldNow();if(stopped())return null;}
         if(visitedCount%256===0)spatial((soft?'Searching repair for ':'Searching ')+net.name,{stage:'search',netId:net.id,netName:net.name,expanded:visitedCount,repair:soft,searchId:tag},()=>{
           const branch=[];let node=id;for(;node>=0&&branch.length<2048;node=parent[node])branch.push(xy(node));branch.reverse();
@@ -321,8 +372,9 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
           if(!preferShort(net))preferred=directions
             ?((directions.get(l)==='vertical'?dx!==0:dy!==0)?0.35:0)
             :((l%2===0?dy!==0:dx!==0)?0.05:0);
-          relax(id,next,(dx&&dy?SQRT2:1)+bend+preferred+(occupied?softPenalty*(1+Math.min(10,(padCounts.get(c.dyn[next])||6)/3))*(finishing?1+(ripHistory.get(c.dyn[next])||0)*.4:1):0));}
-        if(layerCount>1&&!c.via.disabled&&l>=c.via.fromLayer&&l<=c.via.toLayer){let safe=true,occupied=false;for(let z=c.via.fromLayer;z<=c.via.toLayer;z++){let vi=idx(x,y,z);if(!allowed(c.viaBase,vi,net.id)){safe=false;break;}if(!allowed(c.viaDyn,vi,net.id))occupied=true;}if(safe&&(!occupied||soft))for(const z of layers)if(z!==l&&z>=c.via.fromLayer&&z<=c.via.toLayer){let next=idx(x,y,z);if(allowed(c.base,next,net.id))relax(id,next,viaCost+(occupied?softPenalty*4:0));}}
+          const historical=finishing&&!preferShort(net)&&congestionHistory?congestionHistory[next]*.35:0;
+          relax(id,next,(dx&&dy?SQRT2:1)+bend+preferred+historical+(occupied?softPenalty*crossingWeight(c.dyn[next]):0));}
+        if(layerCount>1&&!c.via.disabled&&l>=c.via.fromLayer&&l<=c.via.toLayer){let safe=true,occupied=false,history=0;for(let z=c.via.fromLayer;z<=c.via.toLayer;z++){let vi=idx(x,y,z);if(!allowed(c.viaBase,vi,net.id)){safe=false;break;}if(!allowed(c.viaDyn,vi,net.id))occupied=true;if(finishing&&!preferShort(net)&&congestionHistory)history=Math.max(history,congestionHistory[vi]);}if(safe&&(!occupied||soft))for(const z of layers)if(z!==l&&z>=c.via.fromLayer&&z<=c.via.toLayer){let next=idx(x,y,z);if(allowed(c.base,next,net.id))relax(id,next,viaCost+history*.35*Math.max(1,viaCost)+(occupied?softPenalty*4:0));}}
       }
       return bestGoal===null?null:foundPath(bestGoal);
       }finally{flush();finish?.();}
@@ -339,6 +391,132 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
     function blockers(copper,net){let out=new Set();out.traces=new Set();out.vias=new Set();for(const t of board.traces.slice(original.traces.length)){if(t.net===net.id)continue;let clear=Math.max(clearanceOf(net),clearanceOf(rules.get(t.net)));for(const a of copper.traces)if(a.layer===t.layer&&overlap(expanded(bboxPoints(a.points),a.width/2+t.width/2+clear+EPS),bboxPoints(t.points))){outer:for(let i=1;i<a.points.length;i++)for(let j=1;j<t.points.length;j++)if(G.distanceSegments(a.points[i-1],a.points[i],t.points[j-1],t.points[j])<a.width/2+t.width/2+clear+EPS){{out.add(t.net);out.traces.add(t);}break outer;}}
         for(const v of copper.vias)if(v.layers.includes(t.layer)&&t.points.some((p,i)=>i&&segmentDistance(v.x,v.y,t.points[i-1],p)<v.diameter/2+t.width/2+clear+EPS)){out.add(t.net);out.traces.add(t);}}
       for(const v of board.vias.slice(original.vias.length)){if(v.net===net.id)continue;let clear=Math.max(clearanceOf(net),clearanceOf(rules.get(v.net)));for(const t of copper.traces)if(v.layers.includes(t.layer)&&t.points.some((p,i)=>i&&segmentDistance(v.x,v.y,t.points[i-1],p)<v.diameter/2+t.width/2+clear+EPS)){out.add(v.net);out.vias.add(v);}for(const w of copper.vias)if(v.layers.some(l=>w.layers.includes(l))&&Math.hypot(v.x-w.x,v.y-w.y)<v.diameter/2+w.diameter/2+clear+EPS){out.add(v.net);out.vias.add(v);}}return out;}
+    function pruneGeneratedIslands(connections){
+      const traces=new Set(),vias=new Set();
+      for(const component of connections.components)for(const group of component.groups){
+        if(group.pads.length||!group.items.length)continue;
+        // An imported or protected item preserves its entire copper group.
+        // Removing a padless all-generated group cannot disconnect any pads.
+        if(!group.items.every(item=>{
+          const list=item.kind==='trace'?board.traces:item.kind==='via'?board.vias:null;
+          const prefix=item.kind==='trace'?original.traces.length:original.vias.length;
+          const object=list?.[item.index];return object&&item.index>=prefix&&!object.fixed&&!object.fanout;
+        }))continue;
+        for(const item of group.items)(item.kind==='trace'?traces:vias).add((item.kind==='trace'?board.traces:board.vias)[item.index]);
+      }
+      if(!traces.size&&!vias.size)return false;
+      spatial('Removing detached generated copper',{stage:'repair-cleanup',traces:traces.size,vias:vias.size},()=>traceVisual([...traces],[...vias].flatMap(v=>v.layers.map(l=>[v.x,v.y,l])),'check','Detached generated copper being removed'),'finishing');
+      board.traces=board.traces.filter(t=>!traces.has(t));board.vias=board.vias.filter(v=>!vias.has(v));generation++;
+      return true;
+    }
+    async function relocateBlockedVia(copper,blocked,net){
+      if(!finishing||blocked.traces.size||blocked.vias.size!==1||stopped())return null;
+      const via=blocked.vias.values().next().value,viaIndex=board.vias.indexOf(via),ownNet=rules.get(via.net);
+      if(viaIndex<original.vias.length||via.fixed||via.fanout||!ownNet)return null;
+      const center=[via.x,via.y],usedLayers=new Set();
+      // Restrict this local adjustment to an ordinary generated transition.
+      // Pad attachments, adjacent vias and offset trace contacts need a wider
+      // contact model; retain their existing rip-up behavior.
+      for(const p of original.pads)if(p.net===via.net)for(const shape of p.shapes)if(via.layers.includes(shape.layer)&&G.distancePointShape(via.x,via.y,shape)<=via.diameter/2+EPS)return null;
+      for(const other of board.vias)if(other!==via&&other.net===via.net&&via.layers.some(l=>other.layers.includes(l))&&Math.hypot(other.x-via.x,other.y-via.y)<=via.diameter/2+other.diameter/2+EPS)return null;
+      for(const trace of board.traces)if(trace.net===via.net&&via.layers.includes(trace.layer))for(let i=1;i<trace.points.length;i++){
+        const distance=segmentDistance(via.x,via.y,trace.points[i-1],trace.points[i]);
+        if(distance>via.diameter/2+trace.width/2+EPS)continue;
+        if(distance>EPS||!traceLayers(ownNet).includes(trace.layer))return null;
+        usedLayers.add(trace.layer);
+      }
+      if(usedLayers.size<2)return null;
+      const before=stats(board,true);if(stopped())return null;
+      const routeVias=copper.vias.filter(v=>!board.vias.some(w=>w.net===v.net&&Math.hypot(w.x-v.x,w.y-v.y)<EPS));
+      const proposal={...board,traces:board.traces.concat(copper.traces),vias:board.vias.filter(v=>v!==via).concat(routeVias)};
+      const primitives=G.copper(proposal).primitives,indices=original.layers.map(l=>G.spatialIndex(primitives.filter(p=>p.layer===l.index),indexSize));
+      const def=original.viaDefs.find(d=>d.name===via.padstack);
+      const clearShape=(shape,isVia=false)=>{
+        if(!G.shapeInsideBoard(shape,original,boundaryEdges))return false;
+        for(const p of indices[shape.layer].query(G.shapeBounds(shape),maxClearance)){
+          const distance=G.distanceShapes(shape,p.shape);
+          if(p.net===via.net){
+            if(isVia&&p.object.kind==='pad'&&new Set(p.object.item.shapes.map(s=>s.layer)).size===1&&distance<=EPS&&!(original.viaAtSmd&&def?.attachAllowed!==false))return false;
+            continue;
+          }
+          const clearance=Math.max(clearanceOf(ownNet),clearanceOf(rules.get(p.net)),G.clearance(original,ownNet,rules.get(p.net)));
+          if(distance+EPS<clearance||distance<=EPS)return false;
+        }
+        for(const k of original.keepouts||[]){
+          if(k.layers&&!k.layers.includes(shape.layer)||k.kind==='via'&&!isVia)continue;
+          const distance=G.distanceShapes(shape,k.shape);
+          if(distance+EPS<(k.clearance??clearanceOf(ownNet))||distance<=EPS)return false;
+        }
+        return true;
+      };
+      let tested=0;
+      // 128 finite candidates keep this independent of machine speed and
+      // preserve a paused worker's remaining search after Extend.
+      for(const factor of [.125,.25,.5,1])for(let direction=0;direction<32;direction++){
+        if(stopped())return null;
+        if(tested++%16===0){await yieldNow();if(stopped())return null;}
+        const angle=direction*Math.PI/16,distance=ownNet.width*factor;
+        const moved={...via,x:via.x+Math.cos(angle)*distance,y:via.y+Math.sin(angle)*distance,layers:via.layers.slice()};
+        const bridges=[...usedLayers].map(layer=>({net:via.net,layer,width:ownNet.width,points:[center.slice(),[moved.x,moved.y]],fixed:false}));
+        spatial('Testing local via adjustment · '+ownNet.name,{stage:'via-relocation',netId:ownNet.id,netName:ownNet.name,candidates:tested},()=>traceVisual(bridges,moved.layers.map(layer=>[moved.x,moved.y,layer]),'candidate','Actual via position and connecting bridges'),'finishing');
+        if(!moved.layers.every(layer=>clearShape({type:'circle',cx:moved.x,cy:moved.y,r:moved.diameter/2,layer},true))||!bridges.every(t=>clearShape({type:'capsule',a:t.points[0],b:t.points[1],r:t.width/2,layer:t.layer})))continue;
+        const candidate={...proposal,traces:proposal.traces.concat(bridges),vias:proposal.vias.concat(moved)};
+        detail('Checking local via adjustment · '+ownNet.name,{stage:'via-relocation-check',netId:ownNet.id,netName:ownNet.name},'checking');await yieldNow();if(stopped())return null;
+        const checked=stats(candidate,true);
+        if(checked.unrouted<before.unrouted&&['totalViolations','clearanceViolations','viaInPadViolations','outlineViolations','keepoutViolations','belowNominalWidthTraceCount'].every(key=>checked[key]<=before[key])&&!stopped()){
+          say('Moved a generated via locally to connect '+net.name+' while retaining '+ownNet.name+'.',{phase:'finishing'});
+          return candidate;
+        }
+      }
+      return null;
+    }
+    async function rerouteConflictCluster(copper,blocked,net){
+      if(!finishing||!blocked.size||blocked.size>5||![1,2,7,13].includes(repairRound)||stopped())return null;
+      const neighbours=[...blocked].map(id=>rules.get(id));
+      if(neighbours.some(n=>!n||n.id===net.id||inaccessibleNets.has(n.id)))return null;
+      const snapshot=board,savedActivity=routeActivity,before=stats(board,true);
+      const issueFields=['totalViolations','clearanceViolations','viaInPadViolations','outlineViolations','keepoutViolations','belowNominalWidthTraceCount'];
+      const legal=checked=>issueFields.every(key=>checked[key]<=before[key]);
+      const ascending=neighbours.slice().sort((a,b)=>padCounts.get(a.id)-padCounts.get(b.id)||a.id-b.id),byId=neighbours.slice().sort((a,b)=>a.id-b.id);
+      const orders=[],seen=new Set();
+      for(const order of [ascending,ascending.slice().reverse(),byId,byId.slice().reverse(),shuffled(neighbours,rng(0x434C5553+net.id*131+repairRound)),shuffled(neighbours,rng(0x434C5553+net.id*131+repairRound+7919))]){
+        prioritizeShort(order);const key=order.map(n=>n.id).join(',');if(!seen.has(key)){seen.add(key);orders.push(order);}
+      }
+      try{
+        for(let orderIndex=0;orderIndex<orders.length&&!stopped();orderIndex++){
+          board=copy(snapshot);generation++;
+          const removable=(item,index,prefix)=>index>=prefix&&blocked.has(item.net)&&!item.fixed&&!item.fanout;
+          board.traces=board.traces.filter((t,i)=>!removable(t,i,original.traces.length));
+          board.vias=board.vias.filter((v,i)=>!removable(v,i,original.vias.length));
+          board.traces.push(...copy(copper.traces));
+          for(const v of copper.vias)if(!board.vias.some(w=>w.net===v.net&&Math.hypot(w.x-v.x,w.y-v.y)<EPS))board.vias.push(copy(v));
+          generation++;
+          // The pending path stays present while neighbours reconnect using
+          // hard searches only. A failed trial cannot change the working board.
+          detail('Trying local reroute · '+net.name+' and '+neighbours.length+' neighbouring nets · order '+(orderIndex+1)+'/'+orders.length,{stage:'cluster-repair',netId:net.id,netName:net.name,order:orderIndex+1,total:orders.length},'finishing',true);
+          spatial('Testing local reroute · '+net.name,{stage:'cluster-repair',netId:net.id,netName:net.name,order:orderIndex+1},()=>traceVisual(copper.traces,copper.vias.flatMap(v=>v.layers.map(l=>[v.x,v.y,l])),'candidate','Actual pending route retained during neighbour repair'),'finishing');
+          await yieldNow();if(stopped())return null;
+          if(!legal(stats(board,true)))return null;
+          for(const neighbour of orders[orderIndex]){
+            if(stopped())return null;
+            measurement?.count('ripups',1,neighbour.id);
+            routeActivity={...savedActivity,netId:neighbour.id,netName:neighbour.name,stage:'cluster-repair',order:orderIndex+1};
+            await routeNet(neighbour,false,true,true,false);
+          }
+          await yieldNow();if(stopped())return null;
+          const checked=stats(board,true);
+          if(checked.unrouted<before.unrouted&&legal(checked)&&!stopped()){
+            say('Connected '+net.name+' by rerouting '+neighbours.length+' neighbouring nets.',{phase:'finishing'});
+            return board;
+          }
+        }
+        return null;
+      }finally{
+        // Preserve object identities for the caller's blocker sets and use a
+        // fresh generation so rasters from a discarded trial cannot be reused.
+        board=snapshot;generation++;routeActivity=savedActivity;
+      }
+    }
     function removeNet(net){board.traces=board.traces.filter((t,i)=>i<original.traces.length||t.net!==net);board.vias=board.vias.filter((v,i)=>i<original.vias.length||v.net!==net);generation++;}
     clearSpatial('route-groups','routing');detail('Preparing connected-pad groups for routing',{stage:'route-groups'},'routing');await yieldNow();
     const initialConnections=connectivity(original),groupsByNet=new Map(initialConnections.components.map(c=>[c.net,c.groups]));
@@ -356,7 +534,7 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
       order.sort((a,b)=>densityScores.get(b.id)-densityScores.get(a.id));
     }
 
-    async function routeNet(net,softAllowed,keepExisting=false){measurement?.count('netAttempts',1,net.id);detail('Routing '+net.name+' · attempt '+(routeActivity.attempt||1),{stage:'net',netId:net.id,netName:net.name},finishing?'finishing':'routing');let c=await getRaster(net);if(stopped())return{failed:true,ripped:new Set()};let groups=(keepExisting?(connectivity(board).components.find(c=>c.net===net.id)?.groups||[]):(groupsByNet.get(net.id)||[])).filter(g=>g.points&&g.points.length&&(!inaccessibleGroups.has(net.id)||hasLayerAccess(g,net)));if(groups.length<=1)return{failed:false,ripped:new Set()};let ordered=groups.map(g=>({group:g,seeds:groupSeeds(g,net,c)}));ordered.sort((a,b)=>b.seeds.size-a.seeds.size);let root=ordered.shift(),targets=new Map(root.seeds),targetGroups=[root.group],remaining=ordered,ripped=new Set(),failed=false;
+    async function routeNet(net,softAllowed,keepExisting=false,localOnly=false,allowLocalTransactions=true){measurement?.count('netAttempts',1,net.id);detail('Routing '+net.name+' · attempt '+(routeActivity.attempt||1),{stage:'net',netId:net.id,netName:net.name},finishing?'finishing':'routing');if(stopped())return{failed:true,ripped:new Set()};let connections=keepExisting?connectivity(board):null;if(finishing&&connections&&pruneGeneratedIslands(connections)){await yieldNow();if(stopped())return{failed:true,ripped:new Set()};connections=connectivity(board);}let c=await getRaster(net);if(stopped())return{failed:true,ripped:new Set()};let groups=(keepExisting?(connections.components.find(c=>c.net===net.id)?.groups||[]):(groupsByNet.get(net.id)||[])).filter(g=>g.points&&g.points.length&&(!inaccessibleGroups.has(net.id)||hasLayerAccess(g,net)));if(groups.length<=1)return{failed:false,ripped:new Set()};let ordered=groups.map(g=>({group:g,seeds:groupSeeds(g,net,c)}));ordered.sort((a,b)=>b.seeds.size-a.seeds.size);let root=ordered.shift(),targets=new Map(root.seeds),targetGroups=[root.group],remaining=ordered,ripped=new Set(),failed=false;
       // The route tree grows monotonically within this net attempt. Keep the
       // exact nearest distance and compare only newly added points after each
       // branch, rather than rescanning the full tree in every sort comparison.
@@ -367,21 +545,42 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
           // Generated routes can block the attachment bridge before A* starts.
           // Let soft search reach those endpoints, then rip every crossed net
           // using the same blocker check as the body of the candidate route.
-          const softTargets=new Map(targets);
-          for(const group of targetGroups)for(const [id,seed]of groupSeeds(group,net,c,true)){const old=softTargets.get(id);if(!old||(seed.cost||0)<(old.cost||0))softTargets.set(id,seed);}
-          found=await search(groupSeeds(next.group,net,c,true),softTargets,net,c,true,finishing?[4,12,35,90,250,.5][(repairRound-1)%6]:35);
+          const softPenalty=finishing?[4,12,35,90,250,.5][(repairRound-1)%6]:35,softTargets=new Map(),viaPrices=new Map();
+          // Foreign copper can move between branches. Reprice old attachment
+          // bridges against this generation instead of retaining a stale cost.
+          for(const [id,seed]of targets){
+            if(!seed.bridge){softTargets.set(id,seed);continue;}
+            if(seed.via&&!viaPrices.has(seed.via))viaPrices.set(seed.via,endpointViaPenalty(seed.via,net,softPenalty));
+            const cost=length({points:seed.bridge})+bridgePenalty(seed.bridge,xy(id)[2],net,c,softPenalty)+(seed.via?searchViaCost(net)+viaPrices.get(seed.via):0);
+            softTargets.set(id,{...seed,cost});
+          }
+          for(const group of targetGroups)for(const [id,seed]of groupSeeds(group,net,c,true,softPenalty)){const old=softTargets.get(id);if(!old||(seed.cost||0)<(old.cost||0))softTargets.set(id,seed);}
+          found=await search(groupSeeds(next.group,net,c,true,softPenalty),softTargets,net,c,true,softPenalty);
         }
-        if(!found){failed=true;continue;}let copper=convertPath(found,net);spatial('Checking route candidate · '+net.name,{stage:'route-candidate',netId:net.id,netName:net.name},()=>traceVisual(copper.traces,copper.vias.flatMap(v=>v.layers.map(l=>[v.x,v.y,l])),'candidate','Actual routed candidate · being checked'),finishing?'finishing':'routing');let blocked=blockers(copper,net);if(blocked.size){
+        if(!found){failed=true;continue;}let copper=convertPath(found,net);spatial('Checking route candidate · '+net.name,{stage:'route-candidate',netId:net.id,netName:net.name},()=>traceVisual(copper.traces,copper.vias.flatMap(v=>v.layers.map(l=>[v.x,v.y,l])),'candidate','Actual routed candidate · being checked'),finishing?'finishing':'routing');let blocked=blockers(copper,net),committed=false;
+        if(finishing&&blocked.size&&allowLocalTransactions){
+          let adjusted=await relocateBlockedVia(copper,blocked,net);
+          // A cluster changes foreign attachments. Limit it to the last branch
+          // here; later net attempts rebuild their seed maps from current copper.
+          if(!adjusted&&localOnly&&!remaining.length)adjusted=await rerouteConflictCluster(copper,blocked,net);
+          if(adjusted){board=adjusted;generation++;if(remaining.length)c=await getRaster(net);blocked=new Set();committed=true;}
+        }
+        if(localOnly&&blocked.size){failed=true;continue;}
+        if(blocked.size){
           if(finishing){
             // Retain connected branches of a blocked net. Only copper actually
             // crossed by this candidate needs to be repaired.
+            // A small bounded historical cost discourages cutting the same
+            // region again; it never changes whether copper is legal.
+            if(!await rememberCongestion(blocked,net))return{failed:true,ripped};
             board.traces=board.traces.filter(t=>!blocked.traces.has(t));
             board.vias=board.vias.filter(v=>!blocked.vias.has(v));generation++;
             for(const n of blocked){measurement?.count('ripups',1,n);ripped.add(n);ripHistory.set(n,(ripHistory.get(n)||0)+1);}
+            if(pruneGeneratedIslands(connectivity(board))){await yieldNow();if(stopped())return{failed:true,ripped};}
           }else for(const n of blocked){measurement?.count('ripups',1,n);removeNet(n);ripped.add(n);}
           c=await getRaster(net);
         }
-        board.traces.push(...copper.traces);for(const v of copper.vias)if(!board.vias.some(w=>w.net===v.net&&Math.hypot(w.x-v.x,w.y-v.y)<EPS))board.vias.push(v);generation++;
+        if(!committed){board.traces.push(...copper.traces);for(const v of copper.vias)if(!board.vias.some(w=>w.net===v.net&&Math.hypot(w.x-v.x,w.y-v.y)<EPS))board.vias.push(v);generation++;}
         const hadTargets=targets.size>0,addedTargets=[];
         targetGroups.push(next.group);for(const id of found.path){const point=xy(id);if(!targets.has(id))addedTargets.push(point);targets.set(id,point);}for(const [id,p]of next.seeds){if(!targets.has(id))addedTargets.push(xy(id));targets.set(id,p);}
         // A soft repair can create the first usable grid attachments. In that
@@ -449,7 +648,17 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
       if(safe&&!stopped()){
         // The working seed may contain extra escape vias. Keep it separate from
         // the best exportable result, which must never get worse during repair.
-        let repairBest=restored,repairStats=restoredStats;
+        let repairBest=restored,repairStats=restoredStats,repairSeed=restored;
+        // Keep the safest export separate from the layout used for exploration.
+        // Moving one congested branch can temporarily expose a few other gaps;
+        // restarting every round from the same best layout loses that progress.
+        const repairSignature=candidate=>{
+          const text=JSON.stringify([candidate.traces,candidate.vias]);let a=2166136261,b=2246822507;
+          for(let i=0;i<text.length;i++){const c=text.charCodeAt(i);a=Math.imul(a^c,16777619);b=Math.imul(b^c,3266489909);}
+          return text.length+':'+(a>>>0)+':'+(b>>>0);
+        };
+        const repairSeen=new Set([repairSignature(restored)]);
+        const legalRepair=(candidate,reference)=>['totalViolations','clearanceViolations','viaInPadViolations','outlineViolations','keepoutViolations','belowNominalWidthTraceCount'].every(key=>candidate[key]<=reference[key]);
         let repairFailures=new Set(connectivity(repairBest).components.filter(hasRoutableGap).map(c=>c.net));
         finishing=true;ripHistory.clear();
         const retain=async(measured)=>{
@@ -458,22 +667,41 @@ function createRamenRouter(geometry, optimizer, fanout, yieldTask) {
         };
         for(repairRound=1;repairRound<=18&&!stopped()&&bestStats.unrouted>0&&(!inaccessibleGroups.size||repairFailures.size);repairRound++){
           counters.repair.current=repairRound;counters.repair.status='running';counters.work=null;reportCounters('finishing');
-          board=copy(repairBest);generation++;
+          board=copy(repairSeed);generation++;
           let random=rng(0x52414D45+repairRound*7919),order=shuffled(routingNets,random);
           if(repairRound===1)await sortByDensity(order);else order.sort((a,b)=>(repairFailures.has(b.id)?1:0)-(repairFailures.has(a.id)?1:0));
           const queue=prioritizeShort(order).filter(n=>repairFailures.has(n.id)),attempts=new Map();
           let processed=0,maxWork=nets.length*(repairRound===1?2:3);
+          let trialSeed=null,trialStats=null,trialSignature=null;
+          const rememberTrial=measured=>{
+            if(!legalRepair(measured,repairStats)||measured.unrouted>repairStats.unrouted+3||trialStats&&measured.unrouted>=trialStats.unrouted)return;
+            const signature=repairSignature(board);if(repairSeen.has(signature))return;
+            trialSeed=copy(board);trialStats=measured;trialSignature=signature;
+          };
           emit({type:'progress',phase:'finishing',pass:counters.attempt.current,message:'Finishing remaining connections · repair '+repairRound});
-          while(queue.length&&processed<maxWork&&!stopped()){
+          // Try non-destructive connections and local via moves before a
+          // broader repair changes the neighbouring routes they can preserve.
+          for(const net of queue.slice()){
+            if(stopped())break;
+            routeActivity={pass:counters.attempt.current,repairRound,netId:net.id,netName:net.name,stage:'local-repair'};
+            await routeNet(net,true,true,true);
+            const measured=stats(board,true);await retain(measured);rememberTrial(measured);
+            if(bestStats.unrouted===0)break;
+          }
+          while(queue.length&&processed<maxWork&&!stopped()&&bestStats.unrouted>0){
             const net=queue.shift(),count=(attempts.get(net.id)||0)+1;routeActivity={pass:counters.attempt.current,repairRound,netId:net.id,netName:net.name,processed,total:maxWork,attempt:count};attempts.set(net.id,count);if(count>3)continue;
             const result=await routeNet(net,repairRound>1&&count<3,true);processed++;
             for(const id of result.ripped){const n=rules.get(id);if(n&&!queue.some(x=>x.id===id))queue.push(n);}prioritizeShort(queue);
-            if(connectivity(board).unrouted<repairStats.unrouted){if(detail('Checking repaired route · '+net.name,{stage:'candidate-check'},'checking'))await yieldNow();await retain(stats(board,true));}
+            if(connectivity(board).unrouted<=repairStats.unrouted+3){if(detail('Checking repaired route · '+net.name,{stage:'candidate-check'},'checking'))await yieldNow();const measured=stats(board,true);await retain(measured);rememberTrial(measured);}
             if(processed%3===0){if(Date.now()-lastPreview>=1200){lastPreview=Date.now();emit({type:'progress',phase:'finishing',pass:counters.attempt.current,message:'Finishing repair '+repairRound+' · '+processed+' net attempts · '+queue.length+' queued · last '+net.name,activity:{...routeActivity,processed,queued:queue.length,stage:'net-complete'},board:copy(board),stats:stats(board,false)});}await yieldNow();}
           }
           emit({type:'progress',phase:'checking',pass:counters.attempt.current,message:'Checking the repaired connections'});await yieldNow();
-          const measured=stats(board,true);await retain(measured);
-          repairFailures=new Set(connectivity(repairBest).components.filter(hasRoutableGap).map(c=>c.net));
+          const measured=stats(board,true);await retain(measured);rememberTrial(measured);
+          if(trialSeed&&legalRepair(trialStats,repairStats)&&trialStats.unrouted<=repairStats.unrouted+3){
+            repairSeen.add(trialSignature);repairSeed=trialSeed;
+            if(trialStats.unrouted>=repairStats.unrouted)say('Trying a checked alternative layout for congestion repair · '+trialStats.unrouted+' connections remaining.',{phase:'finishing'});
+          }else repairSeed=copy(repairBest);
+          repairFailures=new Set(connectivity(repairSeed).components.filter(hasRoutableGap).map(c=>c.net));
           say('Finishing repair '+repairRound+': '+measured.unrouted+' remaining; best '+bestStats.unrouted+' remaining.',{phase:'finishing',pass:counters.attempt.current,board:copy(best),stats:bestStats});
           if(!stopped()){counters.repair.completed++;reportCounters('finishing');}
         }
